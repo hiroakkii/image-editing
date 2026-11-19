@@ -1,5 +1,5 @@
 // オフラインでも使えるようにアプリ本体をキャッシュする（画像は一切送信・保存しない）
-const CACHE = 'mosaic-v1';
+const CACHE = 'mosaic-v2';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'effects.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 

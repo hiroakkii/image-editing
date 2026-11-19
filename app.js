@@ -6,6 +6,13 @@ const $ = (id) => document.getElementById(id);
 const IOS_MAX_PIXELS = 16_777_216;
 const JPEG_QUALITY = 0.95;
 
+// 一度に読み込める量（メーターで表示し、超える分は読み込まない）
+const MAX_IMAGES = 50;
+const MAX_TOTAL_BYTES = 150 * 1024 * 1024;
+// まとめて保存のとき、共有メニューに一度に渡す量
+const BATCH_FILES = 10;
+const BATCH_BYTES = 50 * 1024 * 1024;
+
 const EFFECTS = {
   mosaic: { label: 'ブロックの大きさ', min: 2, max: 200, def: 16 },
   blur: { label: 'ぼかしの強さ', min: 1, max: 100, def: 12 },
@@ -20,6 +27,8 @@ const HINTS = {
 };
 
 const state = {
+  images: [], // { id, file, format, W, H, colorSpace, thumb, ops, redo, version, savedVersion }
+  cur: -1,
   file: null,
   format: null, // { kind, ext, baseName, origName }
   W: 0,
@@ -36,8 +45,6 @@ const state = {
   sel: null,
   preview: null,
   view: { s: 1, tx: 0, ty: 0 },
-  dirty: false,
-  saveBlob: null,
 };
 
 loadPrefs();
@@ -46,15 +53,16 @@ loadPrefs();
  * キャンバス
  * ======================================================= */
 
-function makeCanvas(w, h) {
+function makeCanvas(w, h, colorSpace = state.colorSpace) {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
+  c._cs = colorSpace;
   return c;
 }
 
 function ctx2d(c) {
-  return c.getContext('2d', { colorSpace: state.colorSpace, willReadFrequently: true });
+  return c.getContext('2d', { colorSpace: c._cs || state.colorSpace, willReadFrequently: true });
 }
 
 function supportsP3() {
@@ -530,7 +538,7 @@ function applySel() {
   state.ops.push(op);
   state.redo = [];
   state.sel = null;
-  state.dirty = true;
+  markChanged();
   clearPreview();
   updateUI();
   requestDraw();
@@ -556,7 +564,7 @@ function undo() {
   if (!state.ops.length) return;
   state.redo.push(state.ops.pop());
   rebuild();
-  state.dirty = state.ops.length > 0;
+  markChanged();
   schedulePreview();
   requestDraw();
 }
@@ -568,7 +576,7 @@ function redo() {
   const p = computePatch(wctx, state.W, state.H, op, makeCanvas);
   if (p) wctx.putImageData(p.data, p.x, p.y);
   state.ops.push(op);
-  state.dirty = true;
+  markChanged();
   schedulePreview();
   requestDraw();
 }
@@ -640,50 +648,144 @@ async function detectP3(file) {
   return false;
 }
 
-async function loadFile(file) {
-  if (!file) return;
-  if (state.dirty && !confirm('保存していない編集があります。破棄して新しい画像を開きますか？')) return;
+async function decodeFile(file) {
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();
     img.src = url;
-    try {
-      await img.decode();
-    } catch {
-      throw new Error('この画像形式はこのブラウザでは開けません');
+    await img.decode();
+    if (!img.naturalWidth || !img.naturalHeight) throw new Error();
+    return img;
+  } catch {
+    throw new Error(`${file.name || '画像'}：この形式はこのブラウザでは開けません`);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** キャンバスのメモリをすぐに解放する（iPhone の Safari 対策） */
+function releaseCanvas(c) {
+  if (c) { c.width = 0; c.height = 0; }
+}
+
+function totalBytes() {
+  return state.images.reduce((s, im) => s + im.file.size, 0);
+}
+
+let nextId = 1;
+let adding = false;
+
+/** 画像を一覧に追加する（上限を超える分は読み込まない） */
+async function addFiles(fileList) {
+  const files = [...fileList];
+  if (!files.length || adding) return;
+  adding = true;
+  let skipped = 0, failed = 0, added = 0, big = 0;
+  let bytes = totalBytes();
+  const firstNew = state.images.length;
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (state.images.length >= MAX_IMAGES || bytes + file.size > MAX_TOTAL_BYTES) { skipped++; continue; }
+      toast(`読み込み中… ${i + 1} / ${files.length}`, false, 60_000);
+      try {
+        const img = await decodeFile(file);
+        const W = img.naturalWidth, H = img.naturalHeight;
+        const colorSpace = (await detectP3(file)) && supportsP3() ? 'display-p3' : 'srgb';
+        const k = Math.min(1, 160 / Math.max(W, H));
+        const tc = makeCanvas(Math.max(1, Math.round(W * k)), Math.max(1, Math.round(H * k)), 'srgb');
+        const tg = tc.getContext('2d');
+        tg.imageSmoothingQuality = 'high';
+        tg.drawImage(img, 0, 0, tc.width, tc.height);
+        const tb = await toBlob(tc, 'image/jpeg', 0.7);
+        releaseCanvas(tc);
+        if (W * H > IOS_MAX_PIXELS) big++;
+        state.images.push({
+          id: nextId++, file, format: detectFormat(file), W, H, colorSpace,
+          thumb: tb ? URL.createObjectURL(tb) : '',
+          ops: [], redo: [], version: 0, savedVersion: 0,
+        });
+        bytes += file.size;
+        added++;
+        renderStrip();
+      } catch (err) {
+        failed++;
+        console.warn(err);
+      }
     }
-    const W = img.naturalWidth, H = img.naturalHeight;
-    if (!W || !H) throw new Error('画像を読み込めませんでした');
+  } finally {
+    adding = false;
+  }
+  const msgs = [];
+  if (added) msgs.push(`${added}枚を読み込みました`);
+  if (failed) msgs.push(`${failed}枚は開けませんでした`);
+  if (skipped) msgs.push(`上限（${MAX_IMAGES}枚・${formatBytes(MAX_TOTAL_BYTES)}）を超えるため ${skipped}枚は読み込みませんでした`);
+  if (big) msgs.push(`${big}枚はとても大きいため、iPhoneでは正しく処理できない場合があります`);
+  toast(msgs.join('。') || '読み込める画像がありませんでした', !!(failed || skipped || big || !added), (failed || skipped || big) ? 6000 : 2500);
+  if (added) await selectImage(firstNew); // 追加した最初の画像を表示
+  renderStrip();
+  updateUI();
+}
 
-    const p3 = (await detectP3(file)) && supportsP3();
-    state.colorSpace = p3 ? 'display-p3' : 'srgb';
+let selecting = 0;
 
-    const base = makeCanvas(W, H);
+/** 一覧の i 枚目を編集対象にする。選択中の範囲はそのまま引き継ぐ */
+async function selectImage(i) {
+  const im = state.images[i];
+  if (!im) return;
+  const token = ++selecting;
+  try {
+    const img = await decodeFile(im.file);
+    if (token !== selecting) return;
+    const prevBase = state.base, prevWork = state.work;
+    const base = makeCanvas(im.W, im.H, im.colorSpace);
     const bctx = ctx2d(base);
     if (!bctx) throw new Error('画像が大きすぎて処理できません');
     bctx.drawImage(img, 0, 0);
-    const work = makeCanvas(W, H);
-    const wctx = ctx2d(work);
-    if (!wctx) throw new Error('画像が大きすぎて処理できません');
-    wctx.putImageData(bctx.getImageData(0, 0, W, H), 0, 0);
-
+    const work = makeCanvas(im.W, im.H, im.colorSpace);
+    if (!ctx2d(work)) throw new Error('画像が大きすぎて処理できません');
     Object.assign(state, {
-      file, format: detectFormat(file), W, H, base, work,
-      ops: [], redo: [], sel: null, preview: null, dirty: false,
+      cur: i, file: im.file, format: im.format, W: im.W, H: im.H, colorSpace: im.colorSpace,
+      base, work, ops: im.ops, redo: im.redo, preview: null,
     });
-    $('fileName').textContent = file.name || '名称未設定';
-    $('fileMeta').textContent = `${W} × ${H} px ・ ${formatLabel(state.format.kind)} ・ ${formatBytes(file.size)}${p3 ? ' ・ P3' : ''}`;
+    rebuild();
+    if (prevBase !== base) { releaseCanvas(prevBase); releaseCanvas(prevWork); }
+    $('fileName').textContent = im.file.name || '名称未設定';
+    $('fileMeta').textContent = `${im.W} × ${im.H} px ・ ${formatLabel(im.format.kind)} ・ ${formatBytes(im.file.size)}${im.colorSpace === 'display-p3' ? ' ・ P3' : ''}`;
     $('empty').hidden = true;
     $('zoomCtl').hidden = false;
     fit();
-    updateUI();
-    if (W * H > IOS_MAX_PIXELS) {
-      toast('画像がとても大きいため、iPhoneでは正しく処理できない場合があります', true);
-    }
+    renderStrip();
+    schedulePreview();
   } catch (err) {
     toast(err.message || String(err), true);
-  } finally {
-    URL.revokeObjectURL(url);
+  }
+}
+
+/** 一覧から外す */
+function removeImage(i) {
+  const im = state.images[i];
+  if (!im) return;
+  if (isUnsaved(im) && !confirm(`${im.file.name} は保存していない編集があります。一覧から外しますか？`)) return;
+  if (im.thumb) URL.revokeObjectURL(im.thumb);
+  state.images.splice(i, 1);
+  if (!state.images.length) {
+    releaseCanvas(state.base);
+    releaseCanvas(state.work);
+    Object.assign(state, { cur: -1, file: null, format: null, base: null, work: null, ops: [], redo: [], sel: null, preview: null });
+    $('fileName').textContent = '画像未選択';
+    $('fileMeta').textContent = '';
+    $('empty').hidden = false;
+    $('zoomCtl').hidden = true;
+    renderStrip();
+    updateUI();
+    requestDraw();
+    return;
+  }
+  if (i === state.cur) selectImage(Math.min(i, state.images.length - 1));
+  else {
+    if (i < state.cur) state.cur--;
+    renderStrip();
   }
 }
 
@@ -694,7 +796,126 @@ function formatLabel(kind) {
 function formatBytes(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  return `${(n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 2 : 1)} MB`;
+}
+
+/* =========================================================
+ * 一覧（サムネイル）
+ * ======================================================= */
+
+const curImage = () => state.images[state.cur];
+const isEdited = (im) => im.ops.length > 0;
+const isUnsaved = (im) => isEdited(im) && im.version !== im.savedVersion;
+
+function markChanged() {
+  const im = curImage();
+  if (im) im.version++;
+  renderStrip();
+}
+
+function renderStrip() {
+  const n = state.images.length;
+  $('strip').hidden = n === 0;
+  if (!n) return;
+  const thumbs = $('thumbs');
+  thumbs.replaceChildren(
+    ...state.images.map((im, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'thumb' + (i === state.cur ? ' active' : '');
+      b.dataset.index = i;
+      b.title = im.file.name;
+      b.setAttribute('aria-label', `${i + 1}枚目 ${im.file.name}`);
+      if (im.thumb) {
+        const img = document.createElement('img');
+        img.src = im.thumb;
+        img.alt = '';
+        b.append(img);
+      }
+      const badge = document.createElement('span');
+      badge.className = 'badge ' + (isUnsaved(im) ? 'edited' : isEdited(im) ? 'saved' : '');
+      b.append(badge);
+      if (i === state.cur) {
+        const x = document.createElement('span');
+        x.className = 'remove';
+        x.dataset.remove = i;
+        x.setAttribute('aria-label', '一覧から外す');
+        x.textContent = '×';
+        b.append(x);
+      }
+      return b;
+    }),
+  );
+  thumbs.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+  const bytes = totalBytes();
+  const ratio = Math.max(n / MAX_IMAGES, bytes / MAX_TOTAL_BYTES);
+  $('meterBar').style.width = `${Math.min(100, ratio * 100)}%`;
+  $('meter').classList.toggle('high', ratio >= 0.8);
+  const mb = (v) => (v / 1048576).toFixed(v < 10 * 1048576 ? 1 : 0);
+  $('meterText').textContent = `${n}/${MAX_IMAGES}枚・${mb(bytes)}/${mb(MAX_TOTAL_BYTES)}MB`;
+  $('stripCount').textContent = `${state.cur + 1} / ${n}`;
+  $('prevBtn').disabled = state.cur <= 0;
+  $('nextBtn').disabled = state.cur >= n - 1;
+  const edited = state.images.filter(isEdited).length;
+  $('batchBtn').disabled = edited === 0;
+  $('batchBtn').textContent = edited ? `まとめて保存（${edited}）` : 'まとめて保存';
+  $('copyBtn').disabled = !(n > 1 && curImage() && isEdited(curImage()));
+}
+
+/* =========================================================
+ * 他の画像にも適用
+ * ======================================================= */
+
+/** 編集手順を別サイズの画像用に、縦横の比率で位置を合わせる */
+function scaleOp(op, kx, ky) {
+  const o = structuredClone(op);
+  const s = o.sel;
+  if (s.type === 'lasso') s.pts = s.pts.map(([x, y]) => [x * kx, y * ky]);
+  else Object.assign(s, { x: Math.round(s.x * kx), y: Math.round(s.y * ky), w: Math.round(s.w * kx), h: Math.round(s.h * ky) });
+  if (o.effect !== 'fill') o.strength = Math.max(1, Math.round(o.strength * (kx + ky) / 2));
+  return o;
+}
+
+function openCopy() {
+  const src = curImage();
+  if (!src || !isEdited(src)) return;
+  const list = $('copyList');
+  list.replaceChildren(
+    ...state.images.map((im, i) => {
+      if (i === state.cur) return '';
+      const same = im.W === src.W && im.H === src.H;
+      const li = document.createElement('label');
+      li.className = 'copy-item';
+      li.innerHTML = `<input type="checkbox" value="${i}" ${same ? 'checked' : ''}>
+        <img alt="" src="${im.thumb}"><span><b></b><small>${im.W} × ${im.H}${same ? '' : '（サイズ違い：比率で位置を合わせます）'}</small></span>`;
+      li.querySelector('b').textContent = im.file.name;
+      return li;
+    }),
+  );
+  $('copySummary').textContent = `この画像で適用済みの編集（${src.ops.length}件）を、選んだ画像の同じ位置に追加します。`;
+  updateCopyCount();
+  $('copyDlg').showModal();
+}
+
+function updateCopyCount() {
+  const n = $('copyList').querySelectorAll('input:checked').length;
+  $('copyApplyBtn').disabled = n === 0;
+  $('copyApplyBtn').textContent = `${n}枚に適用`;
+}
+
+function applyCopy() {
+  const src = curImage();
+  const targets = [...$('copyList').querySelectorAll('input:checked')].map((c) => state.images[+c.value]);
+  for (const im of targets) {
+    const kx = im.W / src.W, ky = im.H / src.H;
+    for (const op of src.ops) im.ops.push(kx === 1 && ky === 1 ? structuredClone(op) : scaleOp(op, kx, ky));
+    im.redo.length = 0;
+    im.version++;
+  }
+  $('copyDlg').close();
+  renderStrip();
+  toast(`${targets.length}枚に適用しました。ずれた画像は開いて「元に戻す」で取り消せます`);
 }
 
 /* =========================================================
@@ -706,24 +927,22 @@ function toBlob(canvas, mime, q) {
 }
 
 /** 元の形式で書き出す。対応していない形式は近い形式に切り替える */
-async function encode() {
-  const f = state.format;
+async function encode(canvas, format) {
   const plans = {
     png: [['image/png']],
     jpeg: [['image/jpeg', JPEG_QUALITY]],
     heic: [['image/heic', JPEG_QUALITY], ['image/jpeg', JPEG_QUALITY]],
     webp: [['image/webp', JPEG_QUALITY], ['image/png']],
     other: [['image/png']],
-  }[f.kind];
+  }[format.kind];
   for (const [mime, q] of plans) {
-    const blob = await toBlob(state.work, mime, q);
+    const blob = await toBlob(canvas, mime, q);
     if (blob && blob.type === mime) return { blob, mime };
   }
   throw new Error('画像の書き出しに失敗しました');
 }
 
-function extFor(mime) {
-  const f = state.format;
+function extFor(mime, f) {
   const keep = (list, fallback) => (list.includes(f.ext) ? f.rawExt : fallback);
   switch (mime) {
     case 'image/png': return keep(['png'], 'png');
@@ -734,9 +953,46 @@ function extFor(mime) {
   return 'png';
 }
 
+const kindOfMime = (mime) => ({ 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/heic': 'heic', 'image/webp': 'webp' })[mime];
+
 function sanitizeName(s) {
   return s.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
 }
+
+/** 表示していない画像を、元ファイルと編集手順から書き出す */
+async function renderAndEncode(im) {
+  if (im === curImage() && state.work) return encode(state.work, im.format);
+  const img = await decodeFile(im.file);
+  const c = makeCanvas(im.W, im.H, im.colorSpace);
+  const g = ctx2d(c);
+  if (!g) throw new Error(`${im.file.name}：画像が大きすぎて処理できません`);
+  g.drawImage(img, 0, 0);
+  const mk = (w, h) => makeCanvas(w, h, im.colorSpace);
+  for (const op of im.ops) {
+    const p = computePatch(g, im.W, im.H, op, mk);
+    if (p) g.putImageData(p.data, p.x, p.y);
+  }
+  try {
+    return await encode(c, im.format);
+  } finally {
+    releaseCanvas(c);
+  }
+}
+
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file.name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+const canShareFiles = (files) => !!navigator.canShare?.({ files });
+
+/* ---------- 1枚ずつ保存 ---------- */
 
 let saveResult = null;
 
@@ -748,36 +1004,44 @@ async function openSave() {
   $('shareBtn').disabled = true;
   $('downloadBtn').disabled = true;
   $('formatNote').innerHTML = '<li>書き出し中…</li>';
+  saveResult = null;
   dlg.showModal();
   try {
-    saveResult = await encode();
+    saveResult = { ...(await encode(state.work, state.format)), im: curImage(), version: curImage().version };
   } catch (err) {
     $('formatNote').innerHTML = `<li class="warn">${err.message}</li>`;
     return;
   }
   const { blob, mime } = saveResult;
-  $('extLabel').textContent = '.' + extFor(mime);
+  $('extLabel').textContent = '.' + extFor(mime, state.format);
+  $('formatNote').innerHTML = formatNotes(state.format, mime, `${state.W} × ${state.H} px ・ ${formatBytes(blob.size)}`);
+  $('shareBtn').disabled = false;
+  $('downloadBtn').disabled = false;
+  $('shareBtn').hidden = !canShareFiles([new File([blob], 'x.' + extFor(mime, state.format), { type: mime })]);
+}
+
+function formatNotes(format, mime, extra) {
   const notes = [];
-  const outKind = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/heic': 'heic', 'image/webp': 'webp' }[mime];
-  if (outKind !== state.format.kind) {
-    notes.push(
-      `<li class="warn">このブラウザは${formatLabel(state.format.kind)}で保存できないため、${formatLabel(outKind)}で保存します（拡張子も変わります）</li>`,
-    );
+  const outKind = kindOfMime(mime);
+  if (outKind !== format.kind) {
+    notes.push(`<li class="warn">このブラウザは${formatLabel(format.kind)}で保存できないため、${formatLabel(outKind)}で保存します（拡張子も変わります）</li>`);
   }
   if (mime === 'image/png') notes.push('<li>PNG：劣化なし（可逆）で保存します</li>');
   else notes.push(`<li>${formatLabel(outKind)}：品質 ${Math.round(JPEG_QUALITY * 100)}% で保存します</li>`);
   notes.push('<li>撮影日時・位置情報などのメタデータは削除されます</li>');
-  notes.push(`<li>${state.W} × ${state.H} px ・ ${formatBytes(blob.size)}</li>`);
-  $('formatNote').innerHTML = notes.join('');
-  $('shareBtn').disabled = false;
-  $('downloadBtn').disabled = false;
-  $('shareBtn').hidden = !navigator.canShare?.({ files: [new File([blob], 'x.' + extFor(mime), { type: mime })] });
+  if (extra) notes.push(`<li>${extra}</li>`);
+  return notes.join('');
 }
 
 function outputFile() {
-  const { blob, mime } = saveResult;
-  const base = sanitizeName($('nameInput').value) || state.format.baseName || 'image';
-  return new File([blob], `${base}.${extFor(mime)}`, { type: mime, lastModified: Date.now() });
+  const { blob, mime, im } = saveResult;
+  const base = sanitizeName($('nameInput').value) || im.format.baseName || 'image';
+  return new File([blob], `${base}.${extFor(mime, im.format)}`, { type: mime, lastModified: Date.now() });
+}
+
+function markSaved(im, version) {
+  if (im.version === version) im.savedVersion = version;
+  renderStrip();
 }
 
 $('shareBtn').addEventListener('click', async () => {
@@ -785,7 +1049,7 @@ $('shareBtn').addEventListener('click', async () => {
   const file = outputFile();
   try {
     await navigator.share({ files: [file] });
-    state.dirty = false;
+    markSaved(saveResult.im, saveResult.version);
     $('saveDlg').close();
     toast('保存しました');
   } catch (err) {
@@ -796,15 +1060,8 @@ $('shareBtn').addEventListener('click', async () => {
 $('downloadBtn').addEventListener('click', () => {
   if (!saveResult) return;
   const file = outputFile();
-  const url = URL.createObjectURL(file);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = file.name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  state.dirty = false;
+  downloadFile(file);
+  markSaved(saveResult.im, saveResult.version);
   $('saveDlg').close();
   toast(`${file.name} をダウンロードしました`);
 });
@@ -812,6 +1069,155 @@ $('downloadBtn').addEventListener('click', () => {
 $('resetNameBtn').addEventListener('click', () => {
   $('nameInput').value = state.format.baseName;
 });
+
+/* ---------- まとめて保存（自動で数回に分ける） ---------- */
+
+const batch = { queue: [], group: null, preparing: false, done: 0, total: 0, token: 0 };
+
+function batchTargets() {
+  const includeSaved = $('includeSaved').checked;
+  return state.images.filter((im) => isEdited(im) && (includeSaved || isUnsaved(im)));
+}
+
+function openBatch() {
+  if (state.sel && !confirm('選択中の範囲はまだ適用されていません。このまま保存しますか？')) return;
+  const savedCount = state.images.filter((im) => isEdited(im) && !isUnsaved(im)).length;
+  $('includeSavedRow').hidden = savedCount === 0;
+  $('includeSaved').checked = false;
+  $('batchDlg').showModal();
+  startBatch();
+}
+
+function startBatch() {
+  batch.token++;
+  batch.queue = batchTargets();
+  batch.total = batch.queue.length;
+  batch.done = 0;
+  batch.group = null;
+  prepareGroup();
+}
+
+/** 次の1回分（最大 BATCH_FILES 枚・BATCH_BYTES まで）を書き出す */
+async function prepareGroup() {
+  const token = batch.token;
+  batch.group = null;
+  batch.preparing = true;
+  renderBatch();
+  const items = [];
+  let bytes = 0;
+  try {
+    while (batch.queue.length && items.length < BATCH_FILES && bytes < BATCH_BYTES) {
+      const im = batch.queue[0];
+      $('batchStatus').textContent = `書き出し中… ${batch.done + items.length + 1} / ${batch.total}枚目`;
+      const version = im.version;
+      const { blob, mime } = await renderAndEncode(im);
+      if (token !== batch.token) return;
+      if (items.length && bytes + blob.size > BATCH_BYTES) break; // 次の回へ回す
+      batch.queue.shift();
+      const file = new File([blob], `${im.format.baseName}.${extFor(mime, im.format)}`, { type: mime, lastModified: Date.now() });
+      items.push({ im, version, file, changed: kindOfMime(mime) !== im.format.kind });
+      bytes += blob.size;
+    }
+  } catch (err) {
+    if (token !== batch.token) return;
+    batch.preparing = false;
+    $('batchStatus').textContent = err.message || String(err);
+    renderBatch(true);
+    return;
+  }
+  if (token !== batch.token) return;
+  batch.preparing = false;
+  batch.group = { items, bytes };
+  renderBatch();
+}
+
+function renderBatch(failed = false) {
+  const g = batch.group;
+  const remainingAfter = batch.queue.length;
+  const rounds = g ? 1 + Math.ceil(remainingAfter / BATCH_FILES) : 0;
+  $('batchSummary').textContent = batch.total
+    ? `編集した画像 ${batch.total}枚を保存します。一度に渡す量を抑えるため、最大${BATCH_FILES}枚（${formatBytes(BATCH_BYTES)}）ずつに分けて保存します。`
+    : '保存する画像はありません。';
+  $('batchProgress').style.width = batch.total ? `${(batch.done / batch.total) * 100}%` : '0';
+  const share = $('batchShareBtn'), dl = $('batchDownloadBtn');
+  if (failed || !batch.total) {
+    share.disabled = dl.disabled = true;
+    return;
+  }
+  if (!g) {
+    share.disabled = dl.disabled = true;
+    share.textContent = '準備中…';
+    return;
+  }
+  if (!g.items.length) {
+    $('batchStatus').textContent = `${batch.done}枚すべて保存しました`;
+    share.disabled = dl.disabled = true;
+    share.textContent = '完了';
+    return;
+  }
+  const first = batch.done + 1, last = batch.done + g.items.length;
+  const changed = g.items.filter((x) => x.changed).length;
+  $('batchStatus').textContent =
+    `${first}〜${last}枚目（${g.items.length}枚・${formatBytes(g.bytes)}）の準備ができました` +
+    (rounds > 1 ? `。このあと残り約${rounds - 1}回です` : '') +
+    (changed ? `。${changed}枚は元の形式で保存できないため形式が変わります` : '');
+  const ok = canShareFiles(g.items.map((x) => x.file));
+  share.hidden = !ok;
+  share.disabled = false;
+  dl.disabled = false;
+  share.textContent = `写真・ファイルに保存（${first}〜${last}枚目）`;
+}
+
+function finishGroup(g) {
+  if (batch.group !== g) return;
+  for (const x of g.items) markSaved(x.im, x.version);
+  batch.done += g.items.length;
+  if (batch.queue.length) prepareGroup();
+  else {
+    batch.group = { items: [], bytes: 0 };
+    renderBatch();
+    toast(`${batch.done}枚を保存しました`);
+  }
+}
+
+let batchBusy = false;
+async function runGroup(action) {
+  const g = batch.group;
+  if (!g?.items.length || batchBusy) return;
+  batchBusy = true;
+  $('batchShareBtn').disabled = $('batchDownloadBtn').disabled = true;
+  try {
+    if (await action(g)) finishGroup(g);
+    else renderBatch();
+  } finally {
+    batchBusy = false;
+  }
+}
+
+$('batchShareBtn').addEventListener('click', () =>
+  runGroup(async (g) => {
+    try {
+      await navigator.share({ files: g.items.map((x) => x.file) });
+      return true;
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('共有メニューを開けませんでした。枚数が多すぎる可能性があります', true);
+      return false;
+    }
+  }),
+);
+
+$('batchDownloadBtn').addEventListener('click', () =>
+  runGroup(async (g) => {
+    for (const x of g.items) {
+      downloadFile(x.file);
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return true;
+  }),
+);
+
+$('includeSaved').addEventListener('change', startBatch);
+$('batchDlg').addEventListener('close', () => { batch.token++; batch.group = null; batch.queue = []; });
 
 /* =========================================================
  * UI
@@ -898,7 +1304,7 @@ document.querySelector('.swatches').addEventListener('click', (e) => {
 
 $('openBtn').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', (e) => {
-  loadFile(e.target.files[0]);
+  addFiles(e.target.files);
   e.target.value = '';
 });
 $('applyBtn').addEventListener('click', applySel);
@@ -907,6 +1313,24 @@ $('undoBtn').addEventListener('click', undo);
 $('redoBtn').addEventListener('click', redo);
 $('saveBtn').addEventListener('click', openSave);
 $('fitBtn').addEventListener('click', fit);
+$('thumbs').addEventListener('click', (e) => {
+  const rm = e.target.closest('[data-remove]');
+  if (rm) { removeImage(+rm.dataset.remove); return; }
+  const t = e.target.closest('[data-index]');
+  if (t && +t.dataset.index !== state.cur) selectImage(+t.dataset.index);
+});
+$('prevBtn').addEventListener('click', () => state.cur > 0 && selectImage(state.cur - 1));
+$('nextBtn').addEventListener('click', () => state.cur < state.images.length - 1 && selectImage(state.cur + 1));
+$('copyBtn').addEventListener('click', openCopy);
+$('copyList').addEventListener('change', updateCopyCount);
+$('copyAllBtn').addEventListener('click', () => {
+  const boxes = [...$('copyList').querySelectorAll('input')];
+  const all = boxes.every((b) => b.checked);
+  for (const b of boxes) b.checked = !all;
+  updateCopyCount();
+});
+$('copyApplyBtn').addEventListener('click', applyCopy);
+$('batchBtn').addEventListener('click', openBatch);
 $('oneBtn').addEventListener('click', () => {
   const { w, h } = viewSize();
   zoomTo(1 / dpr, w / 2, h / 2);
@@ -916,22 +1340,21 @@ $('oneBtn').addEventListener('click', () => {
 window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => {
   e.preventDefault();
-  const f = e.dataTransfer?.files?.[0];
-  if (f) loadFile(f);
+  if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
 });
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.dirty) e.preventDefault();
+  if (state.images.some(isUnsaved)) e.preventDefault();
 });
 
 let toastTimer = 0;
-function toast(msg, isError = false) {
+function toast(msg, isError = false, duration = isError ? 5000 : 2500) {
   const t = $('toast');
   t.textContent = msg;
   t.classList.toggle('error', isError);
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), isError ? 5000 : 2500);
+  toastTimer = setTimeout(() => t.classList.remove('show'), duration);
 }
 
 function loadPrefs() {
@@ -959,4 +1382,4 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 }
 
 // テスト用
-window.__app = { state, applySel, undo, redo, fit };
+window.__app = { state, applySel, undo, redo, fit, selectImage };
