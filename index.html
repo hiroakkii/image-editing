@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#15171c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="モザイク編集">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <title>モザイク編集</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <button id="openBtn" class="btn primary" type="button">開く</button>
+    <div class="fileinfo">
+      <span id="fileName" class="filename">画像未選択</span>
+      <span id="fileMeta" class="filemeta"></span>
+    </div>
+    <button id="undoBtn" class="icon" type="button" aria-label="元に戻す" title="元に戻す" disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+    </button>
+    <button id="redoBtn" class="icon" type="button" aria-label="やり直す" title="やり直す" disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+    </button>
+    <button id="saveBtn" class="btn accent" type="button" disabled>保存</button>
+    <input type="file" id="fileInput" accept="image/*,.png,.jpg,.jpeg,.heic,.heif,.webp" hidden>
+  </header>
+
+  <main id="stage" class="stage">
+    <canvas id="view"></canvas>
+    <div id="empty" class="empty">
+      <p class="empty-title">「開く」から画像を選択</p>
+      <p class="empty-sub">写真ライブラリ・ファイルのどちらからでも開けます。<br>画像はこの端末の中だけで処理され、外部に送信されません。</p>
+    </div>
+    <div class="zoomctl" id="zoomCtl" hidden>
+      <button id="fitBtn" type="button">全体</button>
+      <span id="zoomLabel">100%</span>
+      <button id="oneBtn" type="button">等倍</button>
+    </div>
+  </main>
+
+  <section class="panel" aria-label="編集ツール">
+    <div class="seg" id="toolSeg" role="radiogroup" aria-label="範囲の指定方法">
+      <button type="button" data-tool="pan">移動</button>
+      <button type="button" data-tool="lasso">なぞる</button>
+      <button type="button" data-tool="rect">四角</button>
+      <button type="button" data-tool="ellipse">楕円</button>
+    </div>
+    <div class="seg" id="effectSeg" role="radiogroup" aria-label="編集の種類">
+      <button type="button" data-effect="mosaic">モザイク</button>
+      <button type="button" data-effect="blur">ぼかし</button>
+      <button type="button" data-effect="fill">塗りつぶし</button>
+    </div>
+    <div class="row" id="strengthRow">
+      <label for="strengthNum" id="strengthLabel">ブロックの大きさ</label>
+      <input type="range" id="strengthRange" aria-labelledby="strengthLabel">
+      <input type="number" id="strengthNum" inputmode="numeric" step="1">
+      <span class="unit">px</span>
+    </div>
+    <div class="row" id="colorRow" hidden>
+      <label for="colorInput">色</label>
+      <div class="swatches">
+        <button type="button" class="swatch" data-color="#000000" style="background:#000" aria-label="黒"></button>
+        <button type="button" class="swatch" data-color="#ffffff" style="background:#fff" aria-label="白"></button>
+        <button type="button" class="swatch" data-color="#808080" style="background:#808080" aria-label="グレー"></button>
+        <input type="color" id="colorInput" value="#000000" aria-label="任意の色">
+      </div>
+    </div>
+    <div class="row actions">
+      <p class="hint" id="hint"></p>
+      <button id="clearSelBtn" class="btn" type="button" disabled>解除</button>
+      <button id="applyBtn" class="btn accent" type="button" disabled>適用</button>
+    </div>
+  </section>
+
+  <dialog id="saveDlg">
+    <form method="dialog" class="dlg">
+      <h2>保存</h2>
+      <label for="nameInput" class="dlg-label">ファイル名</label>
+      <div class="namefield">
+        <input id="nameInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <span id="extLabel">.png</span>
+      </div>
+      <button type="button" id="resetNameBtn" class="link">元の名前に戻す</button>
+      <ul id="formatNote" class="note"></ul>
+      <button type="button" id="shareBtn" class="btn accent wide">写真・ファイルに保存（共有メニュー）</button>
+      <button type="button" id="downloadBtn" class="btn wide">ダウンロード</button>
+      <button value="cancel" class="btn ghost wide">閉じる</button>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
