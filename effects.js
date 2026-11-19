@@ -31,8 +31,19 @@ export function tracePath(ctx, sel, ox = 0, oy = 0) {
   }
 }
 
-/** 選択範囲の内側か（図形の移動判定用） */
+/** 選択範囲の内側か（移動判定用）。なぞった範囲は塗りと同じ nonzero 規則 */
 export function hitInside(sel, x, y) {
+  if (sel.type === 'lasso') {
+    const p = sel.pts;
+    let wn = 0;
+    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+      const [x1, y1] = p[j], [x2, y2] = p[i];
+      const cross = (x2 - x1) * (y - y1) - (x - x1) * (y2 - y1);
+      if (y1 <= y) { if (y2 > y && cross > 0) wn++; }
+      else if (y2 <= y && cross < 0) wn--;
+    }
+    return wn !== 0;
+  }
   if (sel.type === 'rect') return x >= sel.x && x <= sel.x + sel.w && y >= sel.y && y <= sel.y + sel.h;
   if (sel.type === 'ellipse') {
     const rx = sel.w / 2, ry = sel.h / 2;
@@ -41,6 +52,36 @@ export function hitInside(sel, x, y) {
     return dx * dx + dy * dy <= 1;
   }
   return false;
+}
+
+/** 点からなぞった線（閉じた多角形）までの最短距離 */
+export function distToOutline(pts, x, y) {
+  let best = Infinity;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [ax, ay] = pts[j], [bx, by] = pts[i];
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const d = Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** 長く伸ばされた区間に点を補って、続けて変形しても形がなめらかになるようにする */
+export function resample(pts, maxSeg) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    out.push(a);
+    const n = Math.floor(Math.hypot(b[0] - a[0], b[1] - a[1]) / maxSeg);
+    for (let k = 1; k <= n; k++) {
+      const t = k / (n + 1);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
 }
 
 /* ---------------- モザイク ---------------- */

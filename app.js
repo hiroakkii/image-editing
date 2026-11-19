@@ -1,4 +1,4 @@
-import { computePatch, hitInside, selBounds, tracePath } from './effects.js';
+import { computePatch, distToOutline, hitInside, resample, selBounds, tracePath } from './effects.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -14,7 +14,7 @@ const EFFECTS = {
 
 const HINTS = {
   pan: '1本指で移動、2本指で拡大・縮小',
-  lasso: '1本指でなぞって囲む。2本指で拡大・移動',
+  lasso: 'なぞって囲む。線の近くで伸縮、角で拡大縮小、内側で移動。新しく囲むときは外側から',
   rect: 'ドラッグで四角を作成。角でサイズ変更、内側で移動',
   ellipse: 'ドラッグで楕円を作成。角でサイズ変更、内側で移動',
 };
@@ -119,12 +119,20 @@ function draw() {
   if (state.preview) g.drawImage(state.preview.canvas, state.preview.x, state.preview.y);
 
   // 選択範囲
-  const sel = gesture?.type === 'lasso' ? { type: 'lasso', pts: gesture.pts } : state.sel;
+  const drawing = gesture?.type === 'lasso';
+  const sel = drawing ? { type: 'lasso', pts: gesture.pts } : state.sel;
   if (sel && (sel.type !== 'lasso' || sel.pts.length > 1)) {
     const lw = 1.5 / s;
     g.lineJoin = 'round';
-    tracePath(g, sel);
-    if (gesture?.type !== 'lasso') {
+    g.lineCap = 'round';
+    if (drawing) {
+      // なぞっている途中は、なぞった軌跡だけを表示する（始点へは結ばない）
+      const p = sel.pts;
+      g.beginPath();
+      g.moveTo(p[0][0], p[0][1]);
+      for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
+    } else {
+      tracePath(g, sel);
       g.fillStyle = 'rgba(255,176,32,0.10)';
       g.fill();
     }
@@ -138,18 +146,40 @@ function draw() {
     g.stroke();
     g.setLineDash([]);
 
-    if (sel.type !== 'lasso' && gesture?.type !== 'shape') {
+    if (sel.type === 'lasso' && !drawing) {
+      // 全体の拡大・縮小用の枠
+      const b = lassoBox(sel);
+      g.lineWidth = 1 / s;
+      g.setLineDash([3 / s, 3 / s]);
+      g.strokeStyle = 'rgba(255,255,255,0.55)';
+      g.strokeRect(b.x, b.y, b.w, b.h);
+      g.setLineDash([]);
+    }
+    if (gesture?.type === 'deform') {
+      // 変形の影響範囲
+      g.beginPath();
+      g.arc(gesture.cur[0], gesture.cur[1], gesture.radius, 0, Math.PI * 2);
+      g.lineWidth = 1 / s;
+      g.strokeStyle = 'rgba(255,255,255,0.7)';
+      g.stroke();
+    }
+    if (!drawing && gesture?.type !== 'shape' && gesture?.type !== 'deform') {
       const hs = 9 / s;
       g.fillStyle = '#fff';
       g.strokeStyle = '#000';
       g.lineWidth = 1 / s;
-      for (const [cx, cy] of corners(sel)) {
+      for (const [cx, cy] of corners(sel.type === 'lasso' ? lassoBox(sel) : sel)) {
         g.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
         g.strokeRect(cx - hs / 2, cy - hs / 2, hs, hs);
       }
     }
   }
   $('zoomLabel').textContent = `${Math.round(s * 100)}%`;
+}
+
+function lassoBox(sel) {
+  const b = selBounds(sel);
+  return { x: b.x0, y: b.y0, w: b.x1 - b.x0, h: b.y1 - b.y0 };
 }
 
 function corners(sel) {
@@ -179,6 +209,8 @@ function minScale() {
   return Math.min(fitScale() * 0.5, 1);
 }
 const MAX_SCALE = 40;
+// 線を伸縮するときに一緒に動く範囲（画面上の半径 px）。拡大表示するほど細かく調整できる
+const DEFORM_RADIUS = 60;
 
 function fit() {
   if (!state.work) return;
@@ -249,24 +281,57 @@ view.addEventListener('pointerdown', (e) => {
     gesture = { type: 'pan', start: [sx, sy], view: { ...state.view } };
     return;
   }
+  const sel = state.sel;
+  const hr = 22 / state.view.s; // 指で触れる判定の大きさ（画面上 22px）
+  const hitCorner = (box) => {
+    const cs = corners(box);
+    for (let k = 0; k < 4; k++) {
+      if (Math.abs(p[0] - cs[k][0]) <= hr && Math.abs(p[1] - cs[k][1]) <= hr) return cs[3 - k];
+    }
+    return null;
+  };
+
   if (tool === 'lasso') {
-    gesture = { type: 'lasso', pts: [p], last: [sx, sy], restore: state.sel };
+    if (sel?.type === 'lasso') {
+      const restore = structuredClone(sel);
+      // 四隅: 全体を拡大・縮小
+      const anchor = hitCorner(lassoBox(sel));
+      if (anchor) {
+        gesture = { type: 'lassoScale', anchor, box: lassoBox(sel), orig: restore.pts, restore };
+        clearPreview();
+        return;
+      }
+      // 線の近く: その付近だけを伸ばす・縮める
+      if (distToOutline(sel.pts, p[0], p[1]) <= hr) {
+        const radius = DEFORM_RADIUS / state.view.s;
+        const pts = resample(sel.pts, 3 / state.view.s);
+        const weights = pts.map(([x, y]) => {
+          const d = Math.hypot(x - p[0], y - p[1]) / radius;
+          return d >= 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * d);
+        });
+        gesture = { type: 'deform', start: p, cur: p, radius, orig: pts, weights, restore };
+        clearPreview();
+        return;
+      }
+      // 内側: 移動
+      if (hitInside(sel, p[0], p[1])) {
+        gesture = { type: 'lassoMove', start: p, orig: restore.pts, restore };
+        clearPreview();
+        return;
+      }
+    }
+    gesture = { type: 'lasso', pts: [p], last: [sx, sy], restore: sel };
     state.sel = null;
     clearPreview();
     return;
   }
   // 四角・楕円
-  const sel = state.sel;
   if (sel && sel.type === tool) {
-    const hr = 22 / state.view.s;
-    const cs = corners(sel);
-    for (let k = 0; k < 4; k++) {
-      if (Math.abs(p[0] - cs[k][0]) <= hr && Math.abs(p[1] - cs[k][1]) <= hr) {
-        const opp = cs[3 - k];
-        gesture = { type: 'resize', anchor: opp, restore: { ...sel } };
-        clearPreview();
-        return;
-      }
+    const anchor = hitCorner(sel);
+    if (anchor) {
+      gesture = { type: 'resize', anchor, restore: { ...sel } };
+      clearPreview();
+      return;
     }
     if (hitInside(sel, p[0], p[1])) {
       gesture = { type: 'move', start: p, orig: { ...sel }, restore: { ...sel } };
@@ -323,6 +388,30 @@ view.addEventListener('pointermove', (e) => {
       const p = toImage(sx, sy);
       const o = gesture.orig;
       state.sel = { ...o, x: Math.round(o.x + p[0] - gesture.start[0]), y: Math.round(o.y + p[1] - gesture.start[1]) };
+      break;
+    }
+    case 'lassoMove': {
+      const p = toImage(sx, sy);
+      const dx = p[0] - gesture.start[0], dy = p[1] - gesture.start[1];
+      state.sel = { type: 'lasso', pts: gesture.orig.map(([x, y]) => [x + dx, y + dy]) };
+      break;
+    }
+    case 'lassoScale': {
+      const b = gesture.box;
+      const n = rectFrom(gesture.anchor, toImage(sx, sy), 'rect');
+      const kx = b.w ? Math.max(n.w, 2) / b.w : 1, ky = b.h ? Math.max(n.h, 2) / b.h : 1;
+      state.sel = {
+        type: 'lasso',
+        pts: gesture.orig.map(([x, y]) => [n.x + (x - b.x) * kx, n.y + (y - b.y) * ky]),
+      };
+      break;
+    }
+    case 'deform': {
+      const p = toImage(sx, sy);
+      const dx = p[0] - gesture.start[0], dy = p[1] - gesture.start[1];
+      const w = gesture.weights;
+      gesture.cur = p;
+      state.sel = { type: 'lasso', pts: gesture.orig.map(([x, y], i) => [x + dx * w[i], y + dy * w[i]]) };
       break;
     }
   }
