@@ -1,4 +1,5 @@
 import { computePatch, distToOutline, hitInside, resample, selBounds, tracePath } from './effects.js';
+import { STAMPS, annoHandles, annoOutline, createAnno, drawAnnos, fitBubble, hitAnno, scaleAnno, toLocal } from './annotate.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,8 +28,10 @@ const HINTS = {
 };
 
 const state = {
-  images: [], // { id, file, format, W, H, colorSpace, thumb, ops, redo, version, savedVersion }
+  images: [], // { id, file, format, W, H, colorSpace, thumb, ops, annos, undo, redo, version, savedVersion }
   cur: -1,
+  mode: 'hide', // 'hide'（隠す） | 'write'（書き込む）
+  annoSel: null, // 選択中の書き込みの id
   file: null,
   format: null, // { kind, ext, baseName, origName }
   W: 0,
@@ -124,11 +127,17 @@ function draw() {
   g.imageSmoothingEnabled = s < 2;
   g.imageSmoothingQuality = 'high';
   g.drawImage(state.work, 0, 0);
-  if (state.preview) g.drawImage(state.preview.canvas, state.preview.x, state.preview.y);
+  if (state.preview && state.mode === 'hide') g.drawImage(state.preview.canvas, state.preview.x, state.preview.y);
+  const annos = curAnnos();
+  if (annos.length) drawAnnos(g, annos);
+  if (state.mode === 'write') {
+    const o = selectedAnno();
+    if (o) drawAnnoSelection(g, o, s);
+  }
 
   // 選択範囲
   const drawing = gesture?.type === 'lasso';
-  const sel = drawing ? { type: 'lasso', pts: gesture.pts } : state.sel;
+  const sel = state.mode !== 'hide' ? null : drawing ? { type: 'lasso', pts: gesture.pts } : state.sel;
   if (sel && (sel.type !== 'lasso' || sel.pts.length > 1)) {
     const lw = 1.5 / s;
     g.lineJoin = 'round';
@@ -274,6 +283,10 @@ view.addEventListener('pointerdown', (e) => {
       state.sel = gesture.restore;
       if (state.sel) schedulePreview();
     }
+    if (gesture?.snap && gesture.changed) {
+      curImage().annos = gesture.snap.annos; // 書き込みの移動などを取り消す
+      syncProps();
+    }
     const { mid, dist } = pinchInfo();
     gesture = { type: 'pinch', mid, dist, view: { ...state.view } };
     requestDraw();
@@ -283,7 +296,12 @@ view.addEventListener('pointerdown', (e) => {
 
   const [sx, sy] = localPos(e);
   const p = toImage(sx, sy);
-  const tool = spaceDown || e.button === 1 || e.button === 2 ? 'pan' : state.tool;
+  const forcePan = spaceDown || e.button === 1 || e.button === 2;
+  if (state.mode === 'write' && !forcePan) {
+    writePointerDown(p, sx, sy);
+    return;
+  }
+  const tool = forcePan ? 'pan' : state.tool;
 
   if (tool === 'pan') {
     gesture = { type: 'pan', start: [sx, sy], view: { ...state.view } };
@@ -414,6 +432,14 @@ view.addEventListener('pointermove', (e) => {
       };
       break;
     }
+    case 'a-move':
+    case 'a-resize':
+    case 'a-rotate':
+    case 'a-tail':
+    case 'a-end1':
+    case 'a-end2':
+      writePointerMove(toImage(sx, sy));
+      break;
     case 'deform': {
       const p = toImage(sx, sy);
       const dx = p[0] - gesture.start[0], dy = p[1] - gesture.start[1];
@@ -443,6 +469,15 @@ function endPointer(e) {
   }
   const g = gesture;
   gesture = null;
+  if (g.type.startsWith('a-')) {
+    if (g.changed) {
+      pushHistory(curImage(), g.snap);
+      markChanged();
+      syncProps();
+    }
+    requestDraw();
+    return;
+  }
   if (g.type === 'lasso') {
     state.sel = g.pts.length >= 3 && lassoArea(g.pts) > 4 ? { type: 'lasso', pts: g.pts } : g.restore;
   } else if (g.type === 'shape' || g.type === 'resize') {
@@ -483,12 +518,16 @@ for (const t of ['gesturestart', 'gesturechange', 'gestureend']) {
 }
 
 window.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLInputElement) return;
+  if (e.target.closest?.('input, textarea, select')) return;
   const mod = e.metaKey || e.ctrlKey;
   if (e.code === 'Space') { spaceDown = true; e.preventDefault(); }
   else if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); openSave(); }
+  else if (state.mode === 'write') {
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteAnno(); }
+    else if (e.key === 'Escape') { state.annoSel = null; syncProps(); requestDraw(); }
+  }
   else if (e.key === 'Enter') applySel();
   else if (e.key === 'Escape') clearSel();
 });
@@ -534,9 +573,9 @@ function applySel() {
   const p = state.preview?.data
     ? { data: state.preview.data, x: state.preview.x, y: state.preview.y }
     : computePatch(ctx2d(state.work), state.W, state.H, op, makeCanvas);
+  pushHistory();
   if (p) ctx2d(state.work).putImageData(p.data, p.x, p.y);
   state.ops.push(op);
-  state.redo = [];
   state.sel = null;
   markChanged();
   clearPreview();
@@ -560,24 +599,449 @@ function rebuild() {
   }
 }
 
+/* =========================================================
+ * 元に戻す（隠す・書き込むの共通の履歴）
+ * ======================================================= */
+
+function snapshot(im) {
+  return { ops: im.ops.slice(), annos: structuredClone(im.annos) };
+}
+
+function pushHistory(im = curImage(), snap = im && snapshot(im)) {
+  if (!im) return;
+  im.undo.push(snap);
+  if (im.undo.length > 200) im.undo.shift();
+  im.redo.length = 0;
+  lastEdit = null;
+}
+
+function restoreSnapshot(im, snap) {
+  const opsChanged = snap.ops.length !== im.ops.length || snap.ops.some((o, i) => o !== im.ops[i]);
+  im.ops.length = 0;
+  im.ops.push(...snap.ops);
+  im.annos = snap.annos;
+  if (opsChanged && im === curImage()) rebuild();
+  if (!im.annos.some((a) => a.id === state.annoSel)) state.annoSel = null;
+}
+
 function undo() {
-  if (!state.ops.length) return;
-  state.redo.push(state.ops.pop());
-  rebuild();
+  const im = curImage();
+  if (!im?.undo.length) return;
+  im.redo.push(snapshot(im));
+  restoreSnapshot(im, im.undo.pop());
+  lastEdit = null;
   markChanged();
+  syncProps();
   schedulePreview();
   requestDraw();
 }
 
 function redo() {
-  if (!state.redo.length) return;
-  const op = state.redo.pop();
-  const wctx = ctx2d(state.work);
-  const p = computePatch(wctx, state.W, state.H, op, makeCanvas);
-  if (p) wctx.putImageData(p.data, p.x, p.y);
-  state.ops.push(op);
+  const im = curImage();
+  if (!im?.redo.length) return;
+  im.undo.push(snapshot(im));
+  restoreSnapshot(im, im.redo.pop());
+  lastEdit = null;
   markChanged();
+  syncProps();
   schedulePreview();
+  requestDraw();
+}
+
+/* =========================================================
+ * 書き込む（文字・吹き出し・矢印・枠・スタンプ）
+ * ======================================================= */
+
+const ROT_GAP = 30; // 回転ハンドルまでの距離（画面上 px）
+const PALETTE = ['#000000', '#ffffff', '#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#af52de', '#ff2d55'];
+
+const curAnnos = () => curImage()?.annos ?? [];
+const selectedAnno = () => curAnnos().find((a) => a.id === state.annoSel) || null;
+
+// 続けて同じ項目を変えたときは「元に戻す」1回分にまとめる
+let lastEdit = null;
+function editAnno(key, fn) {
+  const o = selectedAnno();
+  if (!o) return;
+  const now = Date.now();
+  if (!lastEdit || lastEdit.key !== key || lastEdit.id !== o.id || now - lastEdit.t > 1500) pushHistory();
+  fn(o);
+  if (o.type === 'bubble' && ['text', 'size', 'font', 'bold', 'vertical', 'shape'].includes(key)) fitBubble(o);
+  lastEdit = { key, id: o.id, t: now };
+  markChanged();
+  requestDraw();
+}
+
+function addAnno(type) {
+  const im = curImage();
+  if (!im) return;
+  const { w, h } = viewSize();
+  const base = Math.min(im.W, im.H);
+  const c = toImage(w / 2, h / 2);
+  const off = (im.annos.length % 5) * base * 0.04; // 続けて追加しても重ならないよう少しずらす
+  const x = Math.min(im.W * 0.9, Math.max(im.W * 0.1, c[0] + off));
+  const y = Math.min(im.H * 0.9, Math.max(im.H * 0.1, c[1] + off));
+  const o = createAnno(type, [x, y], base);
+  pushHistory();
+  im.annos.push(o);
+  state.annoSel = o.id;
+  propTab = 'text';
+  markChanged();
+  syncProps();
+  requestDraw();
+  if (type === 'text' || type === 'bubble') {
+    const t = $('pText');
+    t.focus({ preventScroll: true });
+    t.select();
+  }
+}
+
+function writePointerDown(p, sx, sy) {
+  const im = curImage();
+  const s = state.view.s;
+  const tol = 22 / s;
+  const snap = snapshot(im);
+  const o = selectedAnno();
+  if (o) {
+    // 一番近いハンドル。縮小表示で部品が小さいときは、部品の中心の方が近ければ移動を優先する
+    const cx = o.type === 'arrow' ? (o.x1 + o.x2) / 2 : o.x, cy = o.type === 'arrow' ? (o.y1 + o.y2) / 2 : o.y;
+    const dc = Math.hypot(p[0] - cx, p[1] - cy);
+    let best = null, bd = Infinity;
+    for (const hd of annoHandles(o, ROT_GAP / s)) {
+      const d = Math.hypot(p[0] - hd.x, p[1] - hd.y);
+      if (d < bd) { bd = d; best = hd; }
+    }
+    if (best && bd <= tol && bd < dc) {
+      gesture = { type: 'a-' + best.kind, start: p, orig: structuredClone(o), snap, changed: false };
+      return;
+    }
+  }
+  for (let i = im.annos.length - 1; i >= 0; i--) {
+    const a = im.annos[i];
+    if (hitAnno(a, p[0], p[1], 8 / s)) {
+      if (state.annoSel !== a.id) {
+        state.annoSel = a.id;
+        syncProps();
+      }
+      gesture = { type: 'a-move', start: p, orig: structuredClone(a), snap, changed: false };
+      requestDraw();
+      return;
+    }
+  }
+  if (state.annoSel) {
+    state.annoSel = null;
+    syncProps();
+  }
+  gesture = { type: 'pan', start: [sx, sy], view: { ...state.view } };
+  requestDraw();
+}
+
+function writePointerMove(p) {
+  const o = selectedAnno();
+  if (!o) return;
+  const g0 = gesture.orig;
+  const dx = p[0] - gesture.start[0], dy = p[1] - gesture.start[1];
+  if (!gesture.changed && Math.hypot(dx, dy) * state.view.s < 2) return; // タップでは動かさない
+  gesture.changed = true;
+  switch (gesture.type) {
+    case 'a-move':
+      if (o.type === 'arrow') Object.assign(o, { x1: g0.x1 + dx, y1: g0.y1 + dy, x2: g0.x2 + dx, y2: g0.y2 + dy });
+      else Object.assign(o, { x: g0.x + dx, y: g0.y + dy });
+      break;
+    case 'a-end1':
+      Object.assign(o, { x1: p[0], y1: p[1] });
+      break;
+    case 'a-end2':
+      Object.assign(o, { x2: p[0], y2: p[1] });
+      break;
+    case 'a-rotate': {
+      let a = Math.atan2(p[1] - o.y, p[0] - o.x) + Math.PI / 2;
+      const q = Math.PI / 2, r = Math.round(a / q) * q;
+      if (Math.abs(a - r) < 0.07) a = r; // 0°・90°…に吸い付く
+      o.rot = a;
+      break;
+    }
+    case 'a-tail': {
+      const [lx, ly] = toLocal(o, p[0], p[1]);
+      o.tail = { x: lx, y: ly };
+      break;
+    }
+    case 'a-resize': {
+      const [l0x, l0y] = toLocal(g0, gesture.start[0], gesture.start[1]);
+      const [lx, ly] = toLocal(g0, p[0], p[1]);
+      if (o.type === 'text' || o.type === 'stamp') {
+        const k = Math.hypot(lx, ly) / Math.max(1, Math.hypot(l0x, l0y));
+        o.size = Math.max(4, Math.round(g0.size * k));
+        $('pSize').value = o.size;
+      } else {
+        o.w = Math.max(8, Math.round((g0.w * Math.abs(lx)) / Math.max(1, Math.abs(l0x))));
+        o.h = Math.max(8, Math.round((g0.h * Math.abs(ly)) / Math.max(1, Math.abs(l0y))));
+        if (g0.tail) o.tail = { x: (g0.tail.x * o.w) / g0.w, y: (g0.tail.y * o.h) / g0.h };
+      }
+      break;
+    }
+  }
+}
+
+function drawAnnoSelection(g, o, s) {
+  g.save();
+  const out = annoOutline(o);
+  if (out) {
+    g.beginPath();
+    out.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+    g.closePath();
+    g.lineWidth = 2.5 / s;
+    g.strokeStyle = 'rgba(0,0,0,0.7)';
+    g.stroke();
+    g.lineWidth = 1.2 / s;
+    g.setLineDash([5 / s, 4 / s]);
+    g.strokeStyle = '#ffb020';
+    g.stroke();
+    g.setLineDash([]);
+  }
+  for (const hd of annoHandles(o, ROT_GAP / s)) {
+    g.lineWidth = 1.2 / s;
+    g.strokeStyle = '#000';
+    if (hd.kind === 'rotate') {
+      g.beginPath();
+      g.moveTo(hd.from[0], hd.from[1]);
+      g.lineTo(hd.x, hd.y);
+      g.strokeStyle = '#ffb020';
+      g.stroke();
+      g.strokeStyle = '#000';
+    }
+    g.beginPath();
+    if (hd.kind === 'resize') {
+      const r = 5 / s;
+      g.rect(hd.x - r, hd.y - r, r * 2, r * 2);
+      g.fillStyle = '#fff';
+    } else {
+      g.arc(hd.x, hd.y, (hd.kind === 'rotate' ? 7 : 6.5) / s, 0, Math.PI * 2);
+      g.fillStyle = hd.kind === 'tail' ? '#ffb020' : hd.kind === 'rotate' ? '#e9ecf2' : '#fff';
+    }
+    g.fill();
+    g.stroke();
+  }
+  g.restore();
+}
+
+/** 保存用に、編集後の画像へ書き込みを重ねたキャンバスを作る（書き込みがなければそのまま） */
+function withAnnos(work, im) {
+  if (!im.annos.length) return { canvas: work, temp: false };
+  const c = makeCanvas(im.W, im.H, work._cs);
+  const g = ctx2d(c);
+  g.putImageData(ctx2d(work).getImageData(0, 0, im.W, im.H), 0, 0);
+  drawAnnos(g, im.annos);
+  return { canvas: c, temp: true };
+}
+
+async function encodeWithAnnos(work, im) {
+  const { canvas, temp } = withAnnos(work, im);
+  try {
+    return await encode(canvas, im.format);
+  } finally {
+    if (temp) releaseCanvas(canvas);
+  }
+}
+
+/* ---------- 設定欄 ---------- */
+
+const ALIGN_LABELS = {
+  h: { start: '左揃え', center: '中央揃え', end: '右揃え' },
+  v: { start: '上揃え', center: '中央揃え', end: '下揃え' },
+};
+
+function setPressed(id, on) {
+  $(id).setAttribute('aria-pressed', String(!!on));
+}
+
+function updateWriteHint() {
+  const o = state.mode === 'write' ? selectedAnno() : null;
+  let t = '下のボタンで追加。部品をタップで選択、何もない所のドラッグで画面移動、2本指で拡大';
+  if (o?.type === 'arrow') t = 'ドラッグで移動、両端の丸で向きと長さを変更';
+  else if (o) t = 'ドラッグで移動、四隅で拡大縮小、上の丸で回転' + (o.type === 'bubble' ? '、オレンジの丸でしっぽ' : '');
+  $('writeHint').textContent = state.work ? t : '';
+}
+
+let propTab = 'text';
+
+function syncProps() {
+  const o = state.mode === 'write' ? selectedAnno() : null;
+  $('propPanel').hidden = !o;
+  updateWriteHint();
+  if (!o) {
+    document.body.classList.remove('anno-selected');
+    return;
+  }
+  document.body.classList.toggle('anno-selected', true);
+  for (const el of $('propPanel').querySelectorAll('[data-for]')) {
+    const tabOk = o.type !== 'bubble' || !el.dataset.tab || el.dataset.tab === propTab;
+    el.hidden = !el.dataset.for.split(' ').includes(o.type) || !tabOk;
+  }
+  for (const b of $('pTabs').children) b.setAttribute('aria-checked', String(b.dataset.tab === propTab));
+  if ('text' in o && document.activeElement !== $('pText')) $('pText').value = o.text;
+  if (o.font) $('pFont').value = o.font;
+  if (o.size) $('pSize').value = Math.round(o.size);
+  setPressed('pBold', o.bold);
+  setPressed('pVertical', o.vertical);
+  $('pAlign').textContent = ALIGN_LABELS[o.vertical ? 'v' : 'h'][o.align || 'center'];
+  for (const pal of $('propPanel').querySelectorAll('.pal')) {
+    const v = o[pal.dataset.prop] ?? '';
+    for (const c of pal.querySelectorAll('.chip')) c.setAttribute('aria-pressed', String(c.dataset.c === v));
+    const ci = pal.querySelector('input[type="color"]');
+    if (v) ci.value = v;
+  }
+  for (const b of $('pShape').children) b.setAttribute('aria-checked', String(b.dataset.v === o.shape));
+  for (const b of $('pFrameShape').children) b.setAttribute('aria-checked', String(b.dataset.v === o.shape));
+  $('pLineWidth').value = Math.round(o.lineWidth ?? 0);
+  $('pWidth').value = Math.round(o.width ?? 1);
+  setPressed('pDouble', o.double);
+  for (const b of $('pStamps').children) b.setAttribute('aria-pressed', String(b.dataset.c === o.char));
+}
+
+function buildWriteControls() {
+  for (const pal of document.querySelectorAll('#propPanel .pal')) {
+    const prop = pal.dataset.prop;
+    const chips = [];
+    if (pal.dataset.none) chips.push(Object.assign(document.createElement('button'), { type: 'button', className: 'chip none', title: 'なし' }));
+    for (const c of PALETTE) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip';
+      b.dataset.c = c;
+      b.style.background = c;
+      b.setAttribute('aria-label', c);
+      chips.push(b);
+    }
+    if (pal.dataset.none) chips[0].dataset.c = '';
+    const ci = document.createElement('input');
+    ci.type = 'color';
+    ci.setAttribute('aria-label', '任意の色');
+    pal.append(...chips, ci);
+    pal.addEventListener('click', (e) => {
+      const b = e.target.closest('.chip');
+      if (!b) return;
+      editAnno(prop, (o) => { o[prop] = b.dataset.c || null; });
+      syncProps();
+    });
+    ci.addEventListener('input', () => {
+      editAnno(prop, (o) => { o[prop] = ci.value; });
+      syncProps();
+    });
+  }
+  $('pStamps').append(
+    ...STAMPS.map((c) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.c = c;
+      b.textContent = c;
+      return b;
+    }),
+  );
+  $('pStamps').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    editAnno('char', (o) => { o.char = b.dataset.c; });
+    syncProps();
+  });
+
+  $('addRow').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-add]')?.dataset.add;
+    if (t && state.work) addAnno(t);
+  });
+  $('pText').addEventListener('input', (e) => editAnno('text', (o) => { o.text = e.target.value; }));
+  $('pFont').addEventListener('change', (e) => editAnno('font', (o) => { o.font = e.target.value; }));
+  const num = (id, key, min, fn) => {
+    $(id).addEventListener('input', (e) => {
+      const v = Number(e.target.value);
+      if (Number.isFinite(v) && v >= min) editAnno(key, (o) => fn(o, v));
+    });
+    $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+  };
+  num('pSize', 'size', 4, (o, v) => { o.size = v; });
+  num('pLineWidth', 'lineWidth', 0, (o, v) => { o.lineWidth = v; });
+  num('pWidth', 'width', 1, (o, v) => { o.width = v; });
+  $('pBold').addEventListener('click', () => { editAnno('bold', (o) => { o.bold = !o.bold; }); syncProps(); });
+  $('pDouble').addEventListener('click', () => { editAnno('double', (o) => { o.double = !o.double; }); syncProps(); });
+  $('pVertical').addEventListener('click', () => {
+    editAnno('vertical', (o) => {
+      o.vertical = !o.vertical;
+      // 吹き出しは縦長／横長を入れ替える
+      if (o.type === 'bubble' && (o.vertical ? o.w > o.h : o.h > o.w)) [o.w, o.h] = [o.h, o.w];
+    });
+    syncProps();
+  });
+  $('pAlign').addEventListener('click', () => {
+    const next = { start: 'center', center: 'end', end: 'start' };
+    editAnno('align', (o) => { o.align = next[o.align || 'center']; });
+    syncProps();
+  });
+  for (const [id, key] of [['pShape', 'shape'], ['pFrameShape', 'shape']]) {
+    $(id).addEventListener('click', (e) => {
+      const v = e.target.closest('[data-v]')?.dataset.v;
+      if (v) { editAnno(key, (o) => { o.shape = v; }); syncProps(); }
+    });
+  }
+  $('pTabs').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-tab]')?.dataset.tab;
+    if (t) { propTab = t; syncProps(); }
+  });
+  $('pDelete').addEventListener('click', deleteAnno);
+  $('pDup').addEventListener('click', () => {
+    const o = selectedAnno();
+    if (!o) return;
+    const im = curImage();
+    const d = Math.min(im.W, im.H) * 0.03;
+    const c = { ...structuredClone(o), id: Math.random().toString(36).slice(2, 10) };
+    if (c.type === 'arrow') { c.x1 += d; c.y1 += d; c.x2 += d; c.y2 += d; } else { c.x += d; c.y += d; }
+    pushHistory();
+    im.annos.push(c);
+    state.annoSel = c.id;
+    markChanged();
+    syncProps();
+    requestDraw();
+  });
+  $('pFront').addEventListener('click', () => {
+    const im = curImage(), o = selectedAnno();
+    if (!o || im.annos.at(-1) === o) return;
+    pushHistory();
+    im.annos.splice(im.annos.indexOf(o), 1);
+    im.annos.push(o);
+    markChanged();
+    requestDraw();
+  });
+  $('pDone').addEventListener('click', () => {
+    state.annoSel = null;
+    syncProps();
+    requestDraw();
+  });
+  $('modeSeg').addEventListener('click', (e) => {
+    const m = e.target.closest('[data-mode]')?.dataset.mode;
+    if (m) setMode(m);
+  });
+}
+
+function deleteAnno() {
+  const im = curImage(), o = selectedAnno();
+  if (!o) return;
+  pushHistory();
+  im.annos.splice(im.annos.indexOf(o), 1);
+  state.annoSel = null;
+  markChanged();
+  syncProps();
+  requestDraw();
+}
+
+function setMode(m) {
+  if (state.mode === m) return;
+  state.mode = m;
+  if (m === 'write') clearPreview();
+  else {
+    state.annoSel = null;
+    schedulePreview();
+  }
+  syncProps();
+  updateUI();
   requestDraw();
 }
 
@@ -703,7 +1167,7 @@ async function addFiles(fileList) {
         state.images.push({
           id: nextId++, file, format: detectFormat(file), W, H, colorSpace,
           thumb: tb ? URL.createObjectURL(tb) : '',
-          ops: [], redo: [], version: 0, savedVersion: 0,
+          ops: [], annos: [], undo: [], redo: [], version: 0, savedVersion: 0,
         });
         bytes += file.size;
         added++;
@@ -746,7 +1210,7 @@ async function selectImage(i) {
     if (!ctx2d(work)) throw new Error('画像が大きすぎて処理できません');
     Object.assign(state, {
       cur: i, file: im.file, format: im.format, W: im.W, H: im.H, colorSpace: im.colorSpace,
-      base, work, ops: im.ops, redo: im.redo, preview: null,
+      base, work, ops: im.ops, preview: null, annoSel: null,
     });
     rebuild();
     if (prevBase !== base) { releaseCanvas(prevBase); releaseCanvas(prevWork); }
@@ -756,6 +1220,8 @@ async function selectImage(i) {
     $('zoomCtl').hidden = false;
     fit();
     renderStrip();
+    syncProps();
+    updateUI();
     schedulePreview();
   } catch (err) {
     toast(err.message || String(err), true);
@@ -772,7 +1238,8 @@ function removeImage(i) {
   if (!state.images.length) {
     releaseCanvas(state.base);
     releaseCanvas(state.work);
-    Object.assign(state, { cur: -1, file: null, format: null, base: null, work: null, ops: [], redo: [], sel: null, preview: null });
+    Object.assign(state, { cur: -1, file: null, format: null, base: null, work: null, ops: [], sel: null, preview: null, annoSel: null });
+    syncProps();
     $('fileName').textContent = '画像未選択';
     $('fileMeta').textContent = '';
     $('empty').hidden = false;
@@ -804,7 +1271,7 @@ function formatBytes(n) {
  * ======================================================= */
 
 const curImage = () => state.images[state.cur];
-const isEdited = (im) => im.ops.length > 0;
+const isEdited = (im) => im.ops.length > 0 || im.annos.length > 0;
 const isUnsaved = (im) => isEdited(im) && im.version !== im.savedVersion;
 
 function markChanged() {
@@ -815,7 +1282,7 @@ function markChanged() {
 
 function renderStrip() {
   const n = state.images.length;
-  $('strip').hidden = n === 0;
+  $('strip').hidden = n <= 1; // 1枚だけのときは一覧を出さない（表示部分を広く取る）
   if (!n) return;
   const thumbs = $('thumbs');
   thumbs.replaceChildren(
@@ -893,14 +1360,20 @@ function openCopy() {
       return li;
     }),
   );
-  $('copySummary').textContent = `この画像で適用済みの編集（${src.ops.length}件）を、選んだ画像の同じ位置に追加します。`;
+  $('copySummary').textContent = '表示中の画像の編集を、選んだ画像の同じ位置に追加します。';
+  $('copyOpsN').textContent = `（${src.ops.length}件）`;
+  $('copyAnnosN').textContent = `（${src.annos.length}件）`;
+  $('copyOps').checked = src.ops.length > 0;
+  $('copyOps').disabled = !src.ops.length;
+  $('copyAnnos').checked = src.annos.length > 0;
+  $('copyAnnos').disabled = !src.annos.length;
   updateCopyCount();
   $('copyDlg').showModal();
 }
 
 function updateCopyCount() {
   const n = $('copyList').querySelectorAll('input:checked').length;
-  $('copyApplyBtn').disabled = n === 0;
+  $('copyApplyBtn').disabled = n === 0 || !($('copyOps').checked || $('copyAnnos').checked);
   $('copyApplyBtn').textContent = `${n}枚に適用`;
 }
 
@@ -909,8 +1382,12 @@ function applyCopy() {
   const targets = [...$('copyList').querySelectorAll('input:checked')].map((c) => state.images[+c.value]);
   for (const im of targets) {
     const kx = im.W / src.W, ky = im.H / src.H;
-    for (const op of src.ops) im.ops.push(kx === 1 && ky === 1 ? structuredClone(op) : scaleOp(op, kx, ky));
-    im.redo.length = 0;
+    const same = kx === 1 && ky === 1;
+    pushHistory(im);
+    if ($('copyOps').checked) for (const op of src.ops) im.ops.push(same ? structuredClone(op) : scaleOp(op, kx, ky));
+    if ($('copyAnnos').checked) {
+      for (const a of src.annos) im.annos.push({ ...(same ? structuredClone(a) : scaleAnno(a, kx, ky)), id: Math.random().toString(36).slice(2, 10) });
+    }
     im.version++;
   }
   $('copyDlg').close();
@@ -961,7 +1438,7 @@ function sanitizeName(s) {
 
 /** 表示していない画像を、元ファイルと編集手順から書き出す */
 async function renderAndEncode(im) {
-  if (im === curImage() && state.work) return encode(state.work, im.format);
+  if (im === curImage() && state.work) return encodeWithAnnos(state.work, im);
   const img = await decodeFile(im.file);
   const c = makeCanvas(im.W, im.H, im.colorSpace);
   const g = ctx2d(c);
@@ -972,6 +1449,7 @@ async function renderAndEncode(im) {
     const p = computePatch(g, im.W, im.H, op, mk);
     if (p) g.putImageData(p.data, p.x, p.y);
   }
+  drawAnnos(g, im.annos);
   try {
     return await encode(c, im.format);
   } finally {
@@ -1007,7 +1485,7 @@ async function openSave() {
   saveResult = null;
   dlg.showModal();
   try {
-    saveResult = { ...(await encode(state.work, state.format)), im: curImage(), version: curImage().version };
+    saveResult = { ...(await encodeWithAnnos(state.work, curImage())), im: curImage(), version: curImage().version };
   } catch (err) {
     $('formatNote').innerHTML = `<li class="warn">${err.message}</li>`;
     return;
@@ -1258,7 +1736,11 @@ function setStrength(v, fromRange) {
 function updateUI() {
   for (const b of $('toolSeg').children) b.setAttribute('aria-checked', String(b.dataset.tool === state.tool));
   for (const b of $('effectSeg').children) b.setAttribute('aria-checked', String(b.dataset.effect === state.effect));
-  $('stage').dataset.tool = state.tool;
+  $('stage').dataset.tool = state.mode === 'write' ? 'write' : state.tool;
+  for (const b of $('modeSeg').children) b.setAttribute('aria-checked', String(b.dataset.mode === state.mode));
+  $('hidePanel').hidden = state.mode !== 'hide';
+  $('writePanel').hidden = state.mode !== 'write';
+  for (const b of $('addRow').children) b.disabled = !state.work;
   const cfg = EFFECTS[state.effect];
   $('strengthRow').hidden = !cfg;
   $('colorRow').hidden = !!cfg;
@@ -1275,8 +1757,8 @@ function updateUI() {
   $('hint').textContent = state.work ? HINTS[state.tool] : '';
   $('applyBtn').disabled = !state.sel;
   $('clearSelBtn').disabled = !state.sel;
-  $('undoBtn').disabled = !state.ops.length;
-  $('redoBtn').disabled = !state.redo.length;
+  $('undoBtn').disabled = !curImage()?.undo.length;
+  $('redoBtn').disabled = !curImage()?.redo.length;
   $('saveBtn').disabled = !state.work;
 }
 
@@ -1323,6 +1805,8 @@ $('prevBtn').addEventListener('click', () => state.cur > 0 && selectImage(state.
 $('nextBtn').addEventListener('click', () => state.cur < state.images.length - 1 && selectImage(state.cur + 1));
 $('copyBtn').addEventListener('click', openCopy);
 $('copyList').addEventListener('change', updateCopyCount);
+$('copyOps').addEventListener('change', updateCopyCount);
+$('copyAnnos').addEventListener('change', updateCopyCount);
 $('copyAllBtn').addEventListener('click', () => {
   const boxes = [...$('copyList').querySelectorAll('input')];
   const all = boxes.every((b) => b.checked);
@@ -1375,6 +1859,8 @@ function savePrefs() {
   } catch { /* 無視 */ }
 }
 
+buildWriteControls();
+syncProps();
 updateUI();
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
@@ -1382,4 +1868,4 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 }
 
 // テスト用
-window.__app = { state, applySel, undo, redo, fit, selectImage };
+window.__app = { state, applySel, undo, redo, fit, selectImage, setMode, curImage };

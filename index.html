@@ -66,6 +66,11 @@
   </section>
 
   <section class="panel" aria-label="編集ツール">
+    <div class="seg mode" id="modeSeg" role="radiogroup" aria-label="編集メニュー">
+      <button type="button" data-mode="hide">隠す</button>
+      <button type="button" data-mode="write">書き込む</button>
+    </div>
+    <div id="hidePanel" class="subpanel">
     <div class="seg" id="toolSeg" role="radiogroup" aria-label="範囲の指定方法">
       <button type="button" data-tool="pan">移動</button>
       <button type="button" data-tool="lasso">なぞる</button>
@@ -97,6 +102,65 @@
       <button id="clearSelBtn" class="btn" type="button" disabled>解除</button>
       <button id="applyBtn" class="btn accent" type="button" disabled>適用</button>
     </div>
+    </div>
+
+    <div id="writePanel" class="subpanel" hidden>
+      <div class="addrow" id="addRow">
+        <button type="button" data-add="text"><span class="ai">A</span>文字</button>
+        <button type="button" data-add="bubble"><span class="ai">💬</span>吹き出し</button>
+        <button type="button" data-add="arrow"><span class="ai">➚</span>矢印</button>
+        <button type="button" data-add="frame"><span class="ai">◯</span>枠</button>
+        <button type="button" data-add="stamp"><span class="ai">★</span>スタンプ</button>
+      </div>
+      <p class="hint" id="writeHint"></p>
+      <div id="propPanel" class="props" hidden>
+        <div class="seg small" id="pTabs" data-for="bubble" aria-label="設定の切り替え">
+          <button type="button" data-tab="text">文字</button>
+          <button type="button" data-tab="shape">吹き出しの形・色</button>
+        </div>
+        <textarea id="pText" rows="2" placeholder="文字を入力" data-for="text bubble" data-tab="text"></textarea>
+        <div class="row wrap" data-for="text bubble" data-tab="text">
+          <select id="pFont" aria-label="フォント">
+            <option value="gothic">ゴシック</option>
+            <option value="mincho">明朝</option>
+            <option value="maru">丸ゴシック</option>
+          </select>
+          <label class="mini">サイズ<input type="number" id="pSize" inputmode="numeric" min="4" max="2000"></label>
+          <button type="button" class="tog" id="pBold">太字</button>
+          <button type="button" class="tog" id="pVertical">縦書き</button>
+          <button type="button" class="tog" id="pAlign">中央揃え</button>
+        </div>
+        <div class="row" data-for="text bubble" data-tab="text"><label>文字色</label><div class="pal" data-prop="color"></div></div>
+        <div class="row" data-for="text bubble" data-tab="text"><label>縁取り</label><div class="pal" data-prop="outline" data-none="1"></div></div>
+        <div class="seg small" id="pShape" data-for="bubble" data-tab="shape" aria-label="吹き出しの形">
+          <button type="button" data-v="round">角丸</button>
+          <button type="button" data-v="ellipse">楕円</button>
+          <button type="button" data-v="rect">四角</button>
+          <button type="button" data-v="shout">叫び</button>
+          <button type="button" data-v="thought">思考</button>
+        </div>
+        <div class="row" data-for="bubble" data-tab="shape"><label>塗り</label><div class="pal" data-prop="fill"></div></div>
+        <div class="row" data-for="bubble" data-tab="shape"><label>線</label><div class="pal" data-prop="line"></div></div>
+        <div class="row" data-for="bubble" data-tab="shape"><label>線の太さ</label><input type="number" id="pLineWidth" inputmode="numeric" min="0" max="200"><span class="unit">px</span></div>
+        <div class="seg small" id="pFrameShape" data-for="frame" aria-label="枠の形">
+          <button type="button" data-v="rect">四角</button>
+          <button type="button" data-v="round">角丸</button>
+          <button type="button" data-v="ellipse">楕円</button>
+        </div>
+        <div class="row" data-for="arrow frame"><label>色</label><div class="pal" data-prop="color"></div></div>
+        <div class="row" data-for="arrow frame">
+          <label>太さ</label><input type="number" id="pWidth" inputmode="numeric" min="1" max="500"><span class="unit">px</span>
+          <button type="button" class="tog" id="pDouble" data-for="arrow">両矢印</button>
+        </div>
+        <div class="stamps" id="pStamps" data-for="stamp"></div>
+        <div class="row objactions">
+          <button type="button" class="btn" id="pDup">複製</button>
+          <button type="button" class="btn" id="pFront">前面へ</button>
+          <button type="button" class="btn danger" id="pDelete">削除</button>
+          <button type="button" class="btn" id="pDone">選択解除</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <dialog id="saveDlg">
@@ -119,6 +183,8 @@
     <form method="dialog" class="dlg">
       <h2>他の画像にも適用</h2>
       <p id="copySummary" class="dlg-text"></p>
+      <label class="check"><input type="checkbox" id="copyOps"> 隠す編集（モザイクなど）<span id="copyOpsN"></span></label>
+      <label class="check"><input type="checkbox" id="copyAnnos"> 書き込み（文字・吹き出しなど）<span id="copyAnnosN"></span></label>
       <button type="button" id="copyAllBtn" class="link">すべて選択／解除</button>
       <div id="copyList" class="copy-list"></div>
       <p class="dlg-text small">同じサイズの画像は最初から選ばれています。適用した後、位置がずれた画像は開いて「元に戻す」で取り消せます。</p>
