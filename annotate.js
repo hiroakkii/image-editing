@@ -137,6 +137,170 @@ function roundRectPath(g, x, y, w, h, r) {
   g.closePath();
 }
 
+/* 叫び・思考の形。n: トゲ／ふくらみの数、depth: 長さ／ふくらみ（短辺に対する割合）、irr: 不揃いさ(0〜1) */
+
+export const BUBBLE_STYLES = {
+  shout: [
+    { style: 'zigzag', label: 'ギザギザ' },
+    { style: 'burst', label: '爆発' },
+    { style: 'jolt', label: '電撃' },
+  ],
+  thought: [
+    { style: 'cloud', label: 'もくもく' },
+    { style: 'puffs', label: '丸いふくらみ' },
+  ],
+};
+
+export const STYLE_DEFAULTS = {
+  zigzag: { n: 16, depth: 0.2, irr: 0 },
+  burst: { n: 22, depth: 0.3, irr: 0.8 },
+  jolt: { n: 11, depth: 0.24, irr: 0.7 },
+  cloud: { n: 12, depth: 0.13, irr: 0 },
+  puffs: { n: 10, depth: 0, irr: 0.3 },
+};
+
+/** 見本（最初から入っている吹き出し） */
+export const BUILTIN_PRESETS = [
+  { name: '①ギザギザ（均一）', shape: 'shout', style: 'zigzag', n: 16, depth: 0.2, irr: 0, seed: 3 },
+  { name: '②ギザギザ（不均一・弱め）', shape: 'shout', style: 'zigzag', n: 16, depth: 0.22, irr: 0.5, seed: 7 },
+  { name: '③ギザギザ（不均一・強め）', shape: 'shout', style: 'zigzag', n: 13, depth: 0.26, irr: 1, seed: 11 },
+  { name: '④爆発', shape: 'shout', style: 'burst', n: 22, depth: 0.3, irr: 0.8, seed: 5 },
+  { name: '⑤爆発（細かい）', shape: 'shout', style: 'burst', n: 36, depth: 0.2, irr: 1, seed: 9 },
+  { name: '⑥電撃', shape: 'shout', style: 'jolt', n: 11, depth: 0.24, irr: 0.7, seed: 13 },
+  { name: '⑦もくもく（均一）', shape: 'thought', style: 'cloud', n: 12, depth: 0.13, irr: 0, seed: 1 },
+  { name: '⑧もくもく（不均一）', shape: 'thought', style: 'cloud', n: 11, depth: 0.14, irr: 0.9, seed: 4 },
+  { name: '⑨大きなもくもく', shape: 'thought', style: 'cloud', n: 7, depth: 0.2, irr: 0.6, seed: 8 },
+  { name: '⑩丸いふくらみ', shape: 'thought', style: 'puffs', n: 10, depth: 0, irr: 0.3, seed: 6 },
+  { name: '⑪丸いふくらみ（細かい）', shape: 'thought', style: 'puffs', n: 17, depth: 0, irr: 0.4, seed: 2 },
+  { name: '⑫丸いふくらみ（不均一）', shape: 'thought', style: 'puffs', n: 10, depth: 0, irr: 0.75, seed: 21 },
+];
+
+/** 形の値（足りない値は種類ごとの初期値で補う） */
+export function shapeParams(o) {
+  const list = BUBBLE_STYLES[o.shape] || [];
+  const style = list.some((x) => x.style === o.style) ? o.style : list[0]?.style;
+  const d = STYLE_DEFAULTS[style] || {};
+  return { style, n: o.n ?? d.n, depth: o.depth ?? d.depth, irr: o.irr ?? d.irr, seed: o.seed || 1 };
+}
+
+const ell = (rx, ry, a, k) => [Math.cos(a) * rx * k, Math.sin(a) * ry * k];
+const puffK = (n) => Math.min(0.86, Math.max(0.7, 0.66 + n * 0.01));
+
+const SHAPE_PATHS = {
+  // ギザギザ：外側と内側の点を交互に結ぶ
+  zigzag(g, rx, ry, { n, depth, irr, seed }) {
+    const r = rand(seed);
+    const step = Math.PI / n;
+    g.beginPath();
+    for (let i = 0; i < n * 2; i++) {
+      const a = i * step + 0.15 + (irr ? (r() - 0.5) * step * irr * 1.1 : 0);
+      const k = i % 2 ? 1 - depth * (1 + (r() - 0.5) * irr * 0.8) : 1.04 + r() * irr * 0.32;
+      const [x, y] = ell(rx, ry, a, k);
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    }
+    g.closePath();
+  },
+  // 爆発：楕円の本体から細く鋭いトゲが放射状に出る
+  burst(g, rx, ry, { n, depth, irr, seed }) {
+    const r = rand(seed);
+    const step = (Math.PI * 2) / n;
+    const width = Math.min(0.3, 0.16 + n * 0.004);
+    const spikes = [];
+    for (let i = 0; i < n; i++) {
+      spikes.push({ a: i * step + (r() - 0.5) * step * irr * 0.8, l: depth * (1 - irr * 0.6 + r() * irr * 1.2), w: step * width * (0.7 + r() * 0.6) });
+    }
+    g.beginPath();
+    for (let i = 0; i < n; i++) {
+      const sp = spikes[i], nx = spikes[(i + 1) % n];
+      let [x, y] = ell(rx, ry, sp.a - sp.w, 1);
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+      [x, y] = ell(rx, ry, sp.a, 1 + sp.l);
+      g.lineTo(x, y);
+      [x, y] = ell(rx, ry, sp.a + sp.w, 1);
+      g.lineTo(x, y);
+      const b0 = sp.a + sp.w;
+      const b1 = nx.a - nx.w + (i === n - 1 ? Math.PI * 2 : 0);
+      for (let j = 1; j < 6; j++) {
+        [x, y] = ell(rx, ry, b0 + ((b1 - b0) * j) / 6, 1);
+        g.lineTo(x, y);
+      }
+    }
+    g.closePath();
+  },
+  // 電撃：角ばった二段のギザギザ
+  jolt(g, rx, ry, { n, depth, irr, seed }) {
+    const r = rand(seed);
+    const step = (Math.PI * 2) / n;
+    g.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a = i * step + (r() - 0.5) * step * irr * 0.5;
+      const pts = [
+        [a, 1.08 + r() * irr * 0.3],
+        [a + step * 0.38, 1 - depth * 0.4],
+        [a + step * 0.5, 1.02],
+        [a + step * 0.75, 1 - depth * (0.9 + r() * irr * 0.4)],
+      ];
+      pts.forEach(([aa, k], j) => {
+        const [x, y] = ell(rx, ry, aa, k);
+        i || j ? g.lineTo(x, y) : g.moveTo(x, y);
+      });
+    }
+    g.closePath();
+  },
+  // もくもく：ふくらみを曲線でつなぐ
+  cloud(g, rx, ry, { n, depth, irr, seed }) {
+    const r = rand(seed);
+    const ws = [];
+    for (let i = 0; i < n; i++) ws.push(1 + (r() - 0.5) * irr * 1.4);
+    const tot = ws.reduce((x, y) => x + y, 0);
+    let acc = 0;
+    const angs = ws.map((w) => { const s = acc; acc += (w / tot) * Math.PI * 2; return s; });
+    const k0 = 0.9;
+    g.beginPath();
+    let [x, y] = ell(rx, ry, angs[0], k0);
+    g.moveTo(x, y);
+    for (let i = 0; i < n; i++) {
+      const a0 = angs[i], a1 = i === n - 1 ? Math.PI * 2 : angs[i + 1];
+      const b = depth * ws[i] * (1 + (r() - 0.5) * irr * 0.6);
+      const [cx, cy] = ell(rx, ry, (a0 + a1) / 2, k0 + b * 1.1 * ((a1 - a0) / ((Math.PI * 2) / n)) + 0.06);
+      [x, y] = ell(rx, ry, a1, k0);
+      g.quadraticCurveTo(cx, cy, x, y);
+    }
+    g.closePath();
+  },
+  // 丸いふくらみ：円弧を連ねた漫画風の雲
+  puffs(g, rx, ry, { n, irr, seed }) {
+    const r = rand(seed);
+    const kk = puffK(n);
+    const pts = [];
+    for (let i = 0; i < n; i++) pts.push(ell(rx, ry, (i / n) * Math.PI * 2 + (r() - 0.5) * irr * 0.4, kk));
+    g.beginPath();
+    for (let i = 0; i < n; i++) {
+      const p = pts[i], q = pts[(i + 1) % n];
+      const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+      const d = Math.hypot(q[0] - p[0], q[1] - p[1]) / 2;
+      const rr = d * (1.05 + r() * irr * 0.5);
+      const ang = Math.atan2(q[1] - p[1], q[0] - p[0]);
+      const off = Math.sqrt(Math.max(0, rr * rr - d * d));
+      const cx = mx + Math.sin(ang) * off, cy = my - Math.cos(ang) * off;
+      if (i === 0) g.moveTo(p[0], p[1]);
+      g.arc(cx, cy, rr, Math.atan2(p[1] - cy, p[0] - cx), Math.atan2(q[1] - cy, q[0] - cx), false);
+    }
+    g.closePath();
+  },
+};
+
+/** 吹き出しの中で文字を置ける範囲の割合 */
+function innerFactor(o) {
+  if (o.shape === 'shout' || o.shape === 'thought') {
+    const sp = shapeParams(o);
+    if (sp.style === 'zigzag' || sp.style === 'jolt') return Math.max(0.5, 0.86 - sp.depth);
+    if (sp.style === 'puffs') return puffK(sp.n) * 0.92;
+    return 0.72;
+  }
+  return o.shape === 'ellipse' ? 0.72 : 1;
+}
+
 function bodyPath(g, o) {
   const { w, h } = o;
   const rx = w / 2, ry = h / 2;
@@ -148,30 +312,10 @@ function bodyPath(g, o) {
     case 'ellipse':
       g.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
       break;
-    case 'shout': {
-      const r = rand(o.seed || 1);
-      const n = Math.max(10, Math.min(26, Math.round((w + h) / (Math.min(w, h) * 0.16))));
-      for (let i = 0; i < n * 2; i++) {
-        const a = (i / (n * 2)) * Math.PI * 2 + 0.15;
-        const k = i % 2 ? 0.78 + r() * 0.06 : 1.0 + r() * 0.1;
-        const x = Math.cos(a) * rx * k, y = Math.sin(a) * ry * k;
-        i ? g.lineTo(x, y) : g.moveTo(x, y);
-      }
-      g.closePath();
-      break;
-    }
+    case 'shout':
     case 'thought': {
-      const n = Math.max(8, Math.min(18, Math.round((w + h) / (Math.min(w, h) * 0.26))));
-      const pt = (a, k) => [Math.cos(a) * rx * k, Math.sin(a) * ry * k];
-      const [x0, y0] = pt(0, 0.9);
-      g.moveTo(x0, y0);
-      for (let i = 0; i < n; i++) {
-        const a1 = ((i + 1) / n) * Math.PI * 2, am = ((i + 0.5) / n) * Math.PI * 2;
-        const [cx, cy] = pt(am, 1.16);
-        const [x, y] = pt(a1, 0.9);
-        g.quadraticCurveTo(cx, cy, x, y);
-      }
-      g.closePath();
+      const sp = shapeParams(o);
+      SHAPE_PATHS[sp.style](g, rx, ry, sp);
       break;
     }
     default:
@@ -213,8 +357,7 @@ function tailPath(g, o) {
 
 /** 吹き出しの中で文字を置ける範囲 */
 function innerBox(o) {
-  const round = ['ellipse', 'thought', 'shout'].includes(o.shape);
-  const f = o.shape === 'shout' ? 0.62 : round ? 0.72 : 1;
+  const f = innerFactor(o);
   const pad = o.size * 0.5;
   return { w: Math.max(o.size, o.w * f - pad * 2), h: Math.max(o.size, o.h * f - pad * 2) };
 }
@@ -240,8 +383,7 @@ function drawBubble(g, o) {
 
 /** 文字が収まるよう吹き出しを広げる（横書きは縦に、縦書きは横に伸ばす。縮めはしない） */
 export function fitBubble(o) {
-  const round = ['ellipse', 'thought', 'shout'].includes(o.shape);
-  const f = o.shape === 'shout' ? 0.62 : round ? 0.72 : 1;
+  const f = innerFactor(o);
   const pad = o.size * 0.5;
   const ib = innerBox(o);
   const L = layoutText(o, o.vertical ? 0 : ib.w, o.vertical ? ib.h : 0);
@@ -430,4 +572,64 @@ export function createAnno(type, c, base, extra = {}) {
       return { ...common, type, char: STAMPS[0], size: r(base * 0.12), ...extra };
   }
   return null;
+}
+
+/* ---------------- 吹き出しの登録 ---------------- */
+
+const SHAPE_KEYS = ['shape', 'style', 'n', 'depth', 'irr', 'seed'];
+const STYLE_KEYS = ['fill', 'line', 'font', 'color', 'outline', 'bold', 'vertical', 'align'];
+
+/**
+ * 吹き出しの設定を登録用に取り出す。
+ * 大きさ・線の太さ・文字サイズは画像の短辺に対する割合で記録し、サイズの違う画像でも同じ見た目になるようにする
+ */
+export function presetFromBubble(o, base) {
+  const p = {};
+  for (const k of SHAPE_KEYS) if (o[k] !== undefined) p[k] = o[k];
+  for (const k of STYLE_KEYS) if (o[k] !== undefined) p[k] = o[k];
+  Object.assign(p, shapeParams(o).style ? { style: shapeParams(o).style } : {});
+  p.wR = o.w / base;
+  p.hR = o.h / base;
+  p.lineWidthR = o.lineWidth / base;
+  p.sizeR = o.size / base;
+  if (o.tail) p.tailR = { x: o.tail.x / base, y: o.tail.y / base };
+  return p;
+}
+
+/** 登録した設定を吹き出しに当てはめる（文字の内容・位置・回転はそのまま） */
+export function applyPreset(o, p, base) {
+  for (const k of SHAPE_KEYS) if (p[k] !== undefined) o[k] = p[k];
+  if (p.builtin) return; // 見本は形だけを変える
+  for (const k of STYLE_KEYS) if (p[k] !== undefined) o[k] = p[k];
+  if (p.wR) o.w = Math.max(8, Math.round(p.wR * base));
+  if (p.hR) o.h = Math.max(8, Math.round(p.hR * base));
+  if (p.lineWidthR !== undefined) o.lineWidth = Math.max(0, Math.round(p.lineWidthR * base));
+  if (p.sizeR) o.size = Math.max(4, Math.round(p.sizeR * base));
+  if (p.tailR) o.tail = { x: p.tailR.x * base, y: p.tailR.y * base };
+}
+
+/** 登録一覧に表示する小さな見本を描く */
+export function drawPresetThumb(canvas, p) {
+  const g = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  g.clearRect(0, 0, W, H);
+  const base = 100;
+  const o = {
+    type: 'bubble', x: 0, y: 0, rot: 0, shape: 'round', w: 60, h: 36, tail: { x: -10, y: 30 },
+    fill: '#ffffff', line: '#000000', lineWidth: 1, text: '', size: 10, color: '#000', font: 'gothic',
+  };
+  applyPreset(o, { ...p, builtin: false }, base);
+  if (p.builtin) Object.assign(o, { w: 60, h: 38, tail: { x: -14, y: 30 } });
+  // 枠に収まるよう縮小（トゲのぶんの余白も見込む）
+  const ext = 1.45;
+  const sx = W / ((Math.max(o.w, Math.abs(o.tail?.x ?? 0) * 2) * ext) || 1);
+  const sy = H / ((o.h / 2 + Math.max(o.h / 2, Math.abs(o.tail?.y ?? 0))) * ext || 1);
+  const k = Math.min(sx, sy);
+  o.lineWidth = Math.max(1, o.lineWidth * k) / k;
+  o.text = '';
+  g.save();
+  g.translate(W / 2, H / 2 - (o.tail?.y > 0 ? H * 0.08 : 0));
+  g.scale(k, k);
+  drawAnno(g, o);
+  g.restore();
 }

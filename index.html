@@ -139,6 +139,14 @@
           <button type="button" data-v="shout">叫び</button>
           <button type="button" data-v="thought">思考</button>
         </div>
+        <div id="shapeDetail" data-for="bubble" data-tab="shape" class="shape-detail">
+          <div class="seg small" id="pStyle" aria-label="形の種類"></div>
+          <div class="row slider"><label id="pNLabel" for="pNNum">トゲの数</label><input type="range" id="pN" aria-labelledby="pNLabel"><input type="number" id="pNNum" inputmode="numeric"></div>
+          <div class="row slider" id="pDepthRow"><label id="pDepthLabel" for="pDepthNum">トゲの長さ</label><input type="range" id="pDepth" aria-labelledby="pDepthLabel"><input type="number" id="pDepthNum" inputmode="numeric"><span class="unit">%</span></div>
+          <div class="row slider"><label for="pIrrNum">不揃いさ</label><input type="range" id="pIrr" min="0" max="100" aria-label="不揃いさ"><input type="number" id="pIrrNum" inputmode="numeric" min="0" max="100"><span class="unit">%</span></div>
+          <button type="button" class="btn" id="pReseed">形を変える（同じ設定で描き直す）</button>
+        </div>
+        <div class="row" data-for="bubble" data-tab="shape"><button type="button" class="btn wide-btn" id="pPresetBtn">吹き出しの登録・呼び出し</button></div>
         <div class="row" data-for="bubble" data-tab="shape"><label>塗り</label><div class="pal" data-prop="fill"></div></div>
         <div class="row" data-for="bubble" data-tab="shape"><label>線</label><div class="pal" data-prop="line"></div></div>
         <div class="row" data-for="bubble" data-tab="shape"><label>線の太さ</label><input type="number" id="pLineWidth" inputmode="numeric" min="0" max="200"><span class="unit">px</span></div>
@@ -206,6 +214,29 @@
       </ul>
       <button type="button" id="batchShareBtn" class="btn accent wide" disabled>準備中…</button>
       <button type="button" id="batchDownloadBtn" class="btn wide" disabled>ダウンロード</button>
+      <button value="cancel" class="btn ghost wide">閉じる</button>
+    </form>
+  </dialog>
+
+  <dialog id="presetDlg">
+    <form method="dialog" class="dlg">
+      <h2>吹き出しの登録・呼び出し</h2>
+      <div class="preset-save">
+        <input id="presetName" type="text" autocomplete="off" placeholder="名前（例：叫び・爆発）" aria-label="登録する名前">
+        <button type="button" id="presetSaveBtn" class="btn accent">登録</button>
+      </div>
+      <p class="dlg-text small">選択中の吹き出しの形（種類・トゲやふくらみの数・長さ・不揃いさ）、色、線、文字の書式、大きさを記録します。文字の内容と位置は記録しません。</p>
+      <h3 class="dlg-h3">登録した吹き出し</h3>
+      <div id="presetUser" class="preset-grid"></div>
+      <p id="presetEmpty" class="dlg-text small">まだ登録されていません。</p>
+      <h3 class="dlg-h3">見本（形だけを変えます）</h3>
+      <div id="presetBuiltin" class="preset-grid"></div>
+      <p class="dlg-text small">登録した吹き出しはこの端末のブラウザに保存されます。機種変更などに備えて「書き出し」で保存しておけます。</p>
+      <div class="row">
+        <button type="button" id="presetExportBtn" class="btn">書き出し</button>
+        <button type="button" id="presetImportBtn" class="btn">読み込み</button>
+        <input type="file" id="presetFile" accept="application/json,.json" hidden>
+      </div>
       <button value="cancel" class="btn ghost wide">閉じる</button>
     </form>
   </dialog>

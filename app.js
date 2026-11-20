@@ -1,5 +1,8 @@
 import { computePatch, distToOutline, hitInside, resample, selBounds, tracePath } from './effects.js';
-import { STAMPS, annoHandles, annoOutline, createAnno, drawAnnos, fitBubble, hitAnno, scaleAnno, toLocal } from './annotate.js';
+import {
+  BUBBLE_STYLES, BUILTIN_PRESETS, STAMPS, STYLE_DEFAULTS, annoHandles, annoOutline, applyPreset, createAnno, drawAnnos,
+  drawPresetThumb, fitBubble, hitAnno, presetFromBubble, scaleAnno, shapeParams, toLocal,
+} from './annotate.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -666,7 +669,7 @@ function editAnno(key, fn) {
   const now = Date.now();
   if (!lastEdit || lastEdit.key !== key || lastEdit.id !== o.id || now - lastEdit.t > 1500) pushHistory();
   fn(o);
-  if (o.type === 'bubble' && ['text', 'size', 'font', 'bold', 'vertical', 'shape'].includes(key)) fitBubble(o);
+  if (o.type === 'bubble' && ['text', 'size', 'font', 'bold', 'vertical', 'shape', 'style', 'n', 'depth', 'preset'].includes(key)) fitBubble(o);
   lastEdit = { key, id: o.id, t: now };
   markChanged();
   requestDraw();
@@ -892,6 +895,7 @@ function syncProps() {
     if (v) ci.value = v;
   }
   for (const b of $('pShape').children) b.setAttribute('aria-checked', String(b.dataset.v === o.shape));
+  if (o.type === 'bubble' && !$('shapeDetail').hidden) syncShapeDetail(o);
   for (const b of $('pFrameShape').children) b.setAttribute('aria-checked', String(b.dataset.v === o.shape));
   $('pLineWidth').value = Math.round(o.lineWidth ?? 0);
   $('pWidth').value = Math.round(o.width ?? 1);
@@ -979,7 +983,16 @@ function buildWriteControls() {
   for (const [id, key] of [['pShape', 'shape'], ['pFrameShape', 'shape']]) {
     $(id).addEventListener('click', (e) => {
       const v = e.target.closest('[data-v]')?.dataset.v;
-      if (v) { editAnno(key, (o) => { o.shape = v; }); syncProps(); }
+      if (!v) return;
+      editAnno(key, (o) => {
+        o.shape = v;
+        // 叫び・思考に切り替えたときは、その種類の初期値にする
+        if (o.type === 'bubble' && (v === 'shout' || v === 'thought')) {
+          const st = shapeParams(o).style;
+          if (o.style !== st) Object.assign(o, { style: st, ...STYLE_DEFAULTS[st] });
+        }
+      });
+      syncProps();
     });
   }
   $('pTabs').addEventListener('click', (e) => {
@@ -1019,6 +1032,297 @@ function buildWriteControls() {
     const m = e.target.closest('[data-mode]')?.dataset.mode;
     if (m) setMode(m);
   });
+}
+
+/* =========================================================
+ * 吹き出しの形の調整と登録
+ * ======================================================= */
+
+const PRESET_KEY = 'mosaic-bubble-presets';
+const SHAPE_LABELS = { round: '角丸', ellipse: '楕円', rect: '四角', shout: '叫び', thought: '思考' };
+let userPresets = loadPresets();
+
+function loadPresets() {
+  try {
+    const a = JSON.parse(localStorage.getItem(PRESET_KEY) || '[]');
+    return Array.isArray(a) ? a.map(sanitizePreset).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function storePresets() {
+  try {
+    localStorage.setItem(PRESET_KEY, JSON.stringify(userPresets));
+    return true;
+  } catch {
+    toast('この端末に保存できませんでした（プライベートブラウズでは保存できません）', true);
+    return false;
+  }
+}
+
+/** 読み込んだ登録データを、知っている項目・正しい値だけに絞る */
+function sanitizePreset(p) {
+  if (!p || typeof p !== 'object' || typeof p.name !== 'string' || !SHAPE_LABELS[p.shape]) return null;
+  const color = (v) => (v === null || /^#[0-9a-f]{6}$/i.test(v ?? '') ? v : undefined);
+  const num = (v, min, max) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : undefined);
+  const out = {
+    id: typeof p.id === 'string' ? p.id.slice(0, 20) : Math.random().toString(36).slice(2, 10),
+    name: p.name.slice(0, 40),
+    shape: p.shape,
+    style: Object.values(BUBBLE_STYLES).flat().some((x) => x.style === p.style) ? p.style : undefined,
+    n: num(p.n, 3, 80),
+    depth: num(p.depth, 0, 1),
+    irr: num(p.irr, 0, 1),
+    seed: num(p.seed, 1, 2 ** 31),
+    fill: color(p.fill),
+    line: color(p.line),
+    color: color(p.color),
+    outline: color(p.outline),
+    font: ['gothic', 'mincho', 'maru'].includes(p.font) ? p.font : undefined,
+    bold: typeof p.bold === 'boolean' ? p.bold : undefined,
+    vertical: typeof p.vertical === 'boolean' ? p.vertical : undefined,
+    align: ['start', 'center', 'end'].includes(p.align) ? p.align : undefined,
+    wR: num(p.wR, 0.01, 10),
+    hR: num(p.hR, 0.01, 10),
+    lineWidthR: num(p.lineWidthR, 0, 1),
+    sizeR: num(p.sizeR, 0.001, 2),
+    tailR: p.tailR && Number.isFinite(p.tailR.x) && Number.isFinite(p.tailR.y) ? { x: num(p.tailR.x, -10, 10), y: num(p.tailR.y, -10, 10) } : undefined,
+  };
+  if (out.seed) out.seed = Math.round(out.seed);
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  return out;
+}
+
+function presetLabel(o) {
+  if (o.shape === 'shout' || o.shape === 'thought') {
+    const sp = shapeParams(o);
+    const st = BUBBLE_STYLES[o.shape].find((x) => x.style === sp.style);
+    return `${SHAPE_LABELS[o.shape]}・${st.label}`;
+  }
+  return SHAPE_LABELS[o.shape] || '吹き出し';
+}
+
+function defaultPresetName(o) {
+  const head = presetLabel(o);
+  let i = 1;
+  while (userPresets.some((p) => p.name === `${head}${i}`)) i++;
+  return `${head}${i}`;
+}
+
+function setRange(rid, nid, min, max, v) {
+  for (const id of [rid, nid]) {
+    const el = $(id);
+    el.min = min;
+    el.max = max;
+    el.value = v;
+  }
+}
+
+/** 叫び・思考の調整欄を、選択中の吹き出しに合わせる */
+function syncShapeDetail(o) {
+  const fancy = o.shape === 'shout' || o.shape === 'thought';
+  if (!fancy) {
+    $('shapeDetail').hidden = true;
+    return;
+  }
+  const sp = shapeParams(o);
+  const isShout = o.shape === 'shout';
+  $('pStyle').replaceChildren(
+    ...BUBBLE_STYLES[o.shape].map((x) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.v = x.style;
+      b.textContent = x.label;
+      b.setAttribute('aria-checked', String(x.style === sp.style));
+      return b;
+    }),
+  );
+  $('pNLabel').textContent = isShout ? 'トゲの数' : 'ふくらみの数';
+  setRange('pN', 'pNNum', isShout ? 6 : 5, isShout ? 48 : 24, sp.n);
+  $('pDepthRow').hidden = sp.style === 'puffs';
+  $('pDepthLabel').textContent = isShout ? 'トゲの長さ' : 'ふくらみ';
+  setRange('pDepth', 'pDepthNum', 5, isShout ? 60 : 30, Math.round(sp.depth * 100));
+  setRange('pIrr', 'pIrrNum', 0, 100, Math.round(sp.irr * 100));
+}
+
+function buildShapeControls() {
+  $('pStyle').addEventListener('click', (e) => {
+    const v = e.target.closest('[data-v]')?.dataset.v;
+    if (!v) return;
+    editAnno('style', (o) => Object.assign(o, { style: v, ...STYLE_DEFAULTS[v], seed: o.seed || 1 }));
+    syncProps();
+  });
+  const pair = (rid, nid, key, conv) => {
+    const set = (raw, fromRange) => {
+      let v = Number(raw);
+      if (!Number.isFinite(v)) return;
+      v = Math.min(+$(rid).max, Math.max(+$(rid).min, Math.round(v)));
+      editAnno(key, (o) => {
+        Object.assign(o, shapeParams(o)); // 初期値のままの項目も記録しておく
+        o[key] = conv(v);
+      });
+      $(fromRange ? nid : rid).value = v;
+    };
+    $(rid).addEventListener('input', (e) => set(e.target.value, true));
+    $(nid).addEventListener('change', (e) => set(e.target.value, false));
+    $(nid).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+  };
+  pair('pN', 'pNNum', 'n', (v) => v);
+  pair('pDepth', 'pDepthNum', 'depth', (v) => v / 100);
+  pair('pIrr', 'pIrrNum', 'irr', (v) => v / 100);
+  $('pReseed').addEventListener('click', () => {
+    editAnno('seed', (o) => {
+      Object.assign(o, shapeParams(o));
+      o.seed = 1 + Math.floor(Math.random() * 2 ** 30);
+    });
+    lastEdit = null; // 押すたびに「元に戻す」で1つ前の形へ戻れるようにする
+  });
+
+  $('pPresetBtn').addEventListener('click', openPresets);
+  $('presetSaveBtn').addEventListener('click', savePreset);
+  $('presetName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); savePreset(); } });
+  $('presetUser').addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      const p = userPresets.find((x) => x.id === del.dataset.del);
+      if (p && confirm(`「${p.name}」を削除しますか？`)) {
+        userPresets = userPresets.filter((x) => x !== p);
+        storePresets();
+        renderPresets();
+      }
+      return;
+    }
+    const it = e.target.closest('[data-id]');
+    const p = it && userPresets.find((x) => x.id === it.dataset.id);
+    if (p) usePreset(p);
+  });
+  $('presetBuiltin').addEventListener('click', (e) => {
+    const it = e.target.closest('[data-index]');
+    if (it) usePreset({ ...BUILTIN_PRESETS[+it.dataset.index], builtin: true });
+  });
+  $('presetExportBtn').addEventListener('click', exportPresets);
+  $('presetImportBtn').addEventListener('click', () => $('presetFile').click());
+  $('presetFile').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) importPresets(await f.text());
+  });
+}
+
+function openPresets() {
+  const o = selectedAnno();
+  if (!o || o.type !== 'bubble') return;
+  $('presetName').value = defaultPresetName(o);
+  renderPresets();
+  $('presetDlg').showModal();
+}
+
+function presetItem(p, attrs, deletable) {
+  const b = document.createElement('div');
+  b.className = 'preset-item';
+  b.setAttribute('role', 'button');
+  b.tabIndex = 0;
+  for (const [k, v] of Object.entries(attrs)) b.dataset[k] = v;
+  const c = document.createElement('canvas');
+  c.width = 120 * 2;
+  c.height = 84 * 2;
+  drawPresetThumb(c, p);
+  const span = document.createElement('span');
+  span.textContent = p.name;
+  b.append(c, span);
+  if (deletable) {
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'del';
+    x.dataset.del = p.id;
+    x.textContent = '×';
+    x.setAttribute('aria-label', `${p.name} を削除`);
+    b.append(x);
+  }
+  return b;
+}
+
+function renderPresets() {
+  $('presetUser').replaceChildren(...userPresets.map((p) => presetItem(p, { id: p.id }, true)));
+  $('presetEmpty').hidden = userPresets.length > 0;
+  $('presetExportBtn').disabled = userPresets.length === 0;
+  if (!$('presetBuiltin').children.length) {
+    $('presetBuiltin').replaceChildren(...BUILTIN_PRESETS.map((p, i) => presetItem({ ...p, builtin: true }, { index: i }, false)));
+  }
+}
+
+function savePreset() {
+  const o = selectedAnno();
+  if (!o || o.type !== 'bubble') return;
+  const name = $('presetName').value.trim().slice(0, 40);
+  if (!name) {
+    toast('名前を入れてください', true);
+    return;
+  }
+  const im = curImage();
+  const p = sanitizePreset({ ...presetFromBubble(o, Math.min(im.W, im.H)), name, id: Math.random().toString(36).slice(2, 10) });
+  const same = userPresets.findIndex((x) => x.name === name);
+  if (same >= 0) {
+    if (!confirm(`「${name}」はすでにあります。上書きしますか？`)) return;
+    userPresets[same] = p;
+  } else userPresets.push(p);
+  if (storePresets()) {
+    renderPresets();
+    $('presetName').value = defaultPresetName(o);
+    toast(`「${name}」を登録しました`);
+  }
+}
+
+function usePreset(p) {
+  const o = selectedAnno();
+  if (!o || o.type !== 'bubble') return;
+  const im = curImage();
+  editAnno('preset', (a) => applyPreset(a, p, Math.min(im.W, im.H)));
+  lastEdit = null;
+  syncProps();
+  $('presetDlg').close();
+  toast(`「${p.name}」を当てはめました`);
+}
+
+async function exportPresets() {
+  const json = JSON.stringify({ app: 'mosaic-edit', kind: 'bubble-presets', version: 1, presets: userPresets }, null, 2);
+  const file = new File([json], '吹き出し登録.json', { type: 'application/json' });
+  if (canShareFiles([file])) {
+    try {
+      await navigator.share({ files: [file] });
+      return;
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+    }
+  }
+  downloadFile(file);
+}
+
+function importPresets(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    toast('読み込めませんでした（形式が違います）', true);
+    return;
+  }
+  const list = (Array.isArray(data) ? data : data?.presets || []).map(sanitizePreset).filter(Boolean);
+  if (!list.length) {
+    toast('読み込める吹き出しがありませんでした', true);
+    return;
+  }
+  for (const p of list) {
+    p.id = Math.random().toString(36).slice(2, 10);
+    let name = p.name, i = 2;
+    while (userPresets.some((x) => x.name === name)) name = `${p.name}（${i++}）`;
+    p.name = name;
+    userPresets.push(p);
+  }
+  if (storePresets()) {
+    renderPresets();
+    toast(`${list.length}件を読み込みました`);
+  }
 }
 
 function deleteAnno() {
@@ -1278,6 +1582,8 @@ function markChanged() {
   const im = curImage();
   if (im) im.version++;
   renderStrip();
+  $('undoBtn').disabled = !im?.undo.length;
+  $('redoBtn').disabled = !im?.redo.length;
 }
 
 function renderStrip() {
@@ -1860,6 +2166,7 @@ function savePrefs() {
 }
 
 buildWriteControls();
+buildShapeControls();
 syncProps();
 updateUI();
 
