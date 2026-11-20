@@ -1,6 +1,6 @@
 {
-  "name": "モザイク編集",
-  "short_name": "モザイク編集",
+  "name": "画像編集",
+  "short_name": "画像編集",
   "description": "画像の一部にモザイク・ぼかし・塗りつぶしをかける",
   "start_url": "./",
   "scope": "./",
