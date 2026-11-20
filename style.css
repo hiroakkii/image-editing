@@ -520,3 +520,6 @@ body.anno-selected #addRow button svg { width: 19px; height: 19px; }
   .topbar { gap: 6px; }
   .icon { width: 34px; }
 }
+
+/* 一覧の下：まとめて外す */
+.strip-foot { display: flex; justify-content: flex-end; gap: 8px; }

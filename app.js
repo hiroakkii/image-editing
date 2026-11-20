@@ -1541,12 +1541,21 @@ async function selectImage(i) {
 }
 
 /** 一覧から外す */
+/** 一覧から外す（1枚） */
 function removeImage(i) {
   const im = state.images[i];
   if (!im) return;
   if (isUnsaved(im) && !confirm(`${im.file.name} は保存していない編集があります。一覧から外しますか？`)) return;
-  if (im.thumb) URL.revokeObjectURL(im.thumb);
-  state.images.splice(i, 1);
+  removeImages([im]);
+}
+
+/** 一覧からまとめて外す。表示中の画像が外れたときは、近くの画像を表示する */
+function removeImages(list) {
+  if (!list.length) return;
+  const cur = curImage();
+  const curIndex = state.cur;
+  for (const im of list) if (im.thumb) URL.revokeObjectURL(im.thumb);
+  state.images = state.images.filter((im) => !list.includes(im));
   if (!state.images.length) {
     releaseCanvas(state.base);
     releaseCanvas(state.work);
@@ -1561,11 +1570,31 @@ function removeImage(i) {
     requestDraw();
     return;
   }
-  if (i === state.cur) selectImage(Math.min(i, state.images.length - 1));
+  if (list.includes(cur)) selectImage(Math.min(curIndex, state.images.length - 1));
   else {
-    if (i < state.cur) state.cur--;
+    state.cur = state.images.indexOf(cur);
     renderStrip();
   }
+}
+
+function removeSaved() {
+  const list = state.images.filter((im) => isEdited(im) && !isUnsaved(im));
+  if (!list.length) return;
+  if (!confirm(`保存済みの${list.length}枚を一覧から外しますか？（保存したファイルは消えません）`)) return;
+  removeImages(list);
+  toast(`${list.length}枚を一覧から外しました`);
+}
+
+function removeAll() {
+  const n = state.images.length;
+  if (!n) return;
+  const unsaved = state.images.filter(isUnsaved).length;
+  const msg = unsaved
+    ? `保存していない編集がある画像が${unsaved}枚あります。${n}枚すべてを一覧から外しますか？（外した編集は元に戻せません）`
+    : `${n}枚すべてを一覧から外しますか？（保存したファイルは消えません）`;
+  if (!confirm(msg)) return;
+  removeImages([...state.images]);
+  toast(`${n}枚を一覧から外しました`);
 }
 
 function formatLabel(kind) {
@@ -1647,6 +1676,9 @@ function renderStrip() {
   $('batchBtn').disabled = edited === 0;
   $('batchBtn').textContent = edited ? `まとめて保存（${edited}）` : 'まとめて保存';
   $('copyBtn').disabled = !(n > 1 && curImage() && isEdited(curImage()));
+  const savedCount = state.images.filter((im) => isEdited(im) && !isUnsaved(im)).length;
+  $('removeSavedBtn').disabled = savedCount === 0;
+  $('removeSavedBtn').textContent = savedCount ? `保存済みを外す（${savedCount}）` : '保存済みを外す';
 }
 
 /* =========================================================
@@ -2132,6 +2164,8 @@ view.addEventListener('pointerdown', () => {
 $('prevBtn').addEventListener('click', () => state.cur > 0 && selectImage(state.cur - 1));
 $('nextBtn').addEventListener('click', () => state.cur < state.images.length - 1 && selectImage(state.cur + 1));
 $('copyBtn').addEventListener('click', openCopy);
+$('removeSavedBtn').addEventListener('click', removeSaved);
+$('removeAllBtn').addEventListener('click', removeAll);
 $('copyList').addEventListener('change', updateCopyCount);
 $('copyOps').addEventListener('change', updateCopyCount);
 $('copyAnnos').addEventListener('change', updateCopyCount);
