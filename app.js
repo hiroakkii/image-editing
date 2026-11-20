@@ -121,10 +121,19 @@ function draw() {
   if (!state.work) return;
   const { s, tx, ty } = state.view;
 
+  // 作業台の上に置いた紙のように、画像の下へ薄い影を付ける
+  const ir = [Math.round(tx * dpr), Math.round(ty * dpr), Math.round(state.W * s * dpr), Math.round(state.H * s * dpr)];
+  g.save();
+  g.shadowColor = 'rgba(20, 30, 50, 0.22)';
+  g.shadowBlur = 14 * dpr;
+  g.shadowOffsetY = 3 * dpr;
+  g.fillStyle = '#fff';
+  g.fillRect(...ir);
+  g.restore();
   // 透明部分の市松模様（画面座標）
   checker ||= makeChecker();
   g.fillStyle = checker;
-  g.fillRect(Math.round(tx * dpr), Math.round(ty * dpr), Math.round(state.W * s * dpr), Math.round(state.H * s * dpr));
+  g.fillRect(...ir);
 
   g.setTransform(dpr * s, 0, 0, dpr * s, dpr * tx, dpr * ty);
   g.imageSmoothingEnabled = s < 2;
@@ -153,16 +162,16 @@ function draw() {
       for (let i = 1; i < p.length; i++) g.lineTo(p[i][0], p[i][1]);
     } else {
       tracePath(g, sel);
-      g.fillStyle = 'rgba(255,176,32,0.10)';
+      g.fillStyle = 'rgba(61,72,184,0.14)';
       g.fill();
     }
     g.lineWidth = lw * 2;
     g.setLineDash([]);
-    g.strokeStyle = 'rgba(0,0,0,0.8)';
+    g.strokeStyle = 'rgba(255,255,255,0.95)';
     g.stroke();
     g.lineWidth = lw;
     g.setLineDash([6 / s, 4 / s]);
-    g.strokeStyle = '#ffb020';
+    g.strokeStyle = MODE_COLORS.hide;
     g.stroke();
     g.setLineDash([]);
 
@@ -186,7 +195,7 @@ function draw() {
     if (!drawing && gesture?.type !== 'shape' && gesture?.type !== 'deform') {
       const hs = 9 / s;
       g.fillStyle = '#fff';
-      g.strokeStyle = '#000';
+      g.strokeStyle = MODE_COLORS.hide;
       g.lineWidth = 1 / s;
       for (const [cx, cy] of corners(sel.type === 'lasso' ? lassoBox(sel) : sel)) {
         g.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
@@ -655,7 +664,8 @@ function redo() {
  * 書き込む（文字・吹き出し・矢印・枠・スタンプ）
  * ======================================================= */
 
-const ROT_GAP = 30; // 回転ハンドルまでの距離（画面上 px）
+const ROT_GAP = 30;
+const MODE_COLORS = { hide: '#3d48b8', write: '#0e8a85' }; // style.css の配色と合わせる // 回転ハンドルまでの距離（画面上 px）
 const PALETTE = ['#000000', '#ffffff', '#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#af52de', '#ff2d55'];
 
 const curAnnos = () => curImage()?.annos ?? [];
@@ -793,25 +803,23 @@ function drawAnnoSelection(g, o, s) {
     g.beginPath();
     out.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
     g.closePath();
-    g.lineWidth = 2.5 / s;
-    g.strokeStyle = 'rgba(0,0,0,0.7)';
+    g.lineWidth = 3 / s;
+    g.strokeStyle = 'rgba(255,255,255,0.95)';
     g.stroke();
-    g.lineWidth = 1.2 / s;
+    g.lineWidth = 1.5 / s;
     g.setLineDash([5 / s, 4 / s]);
-    g.strokeStyle = '#ffb020';
+    g.strokeStyle = MODE_COLORS.write;
     g.stroke();
     g.setLineDash([]);
   }
   for (const hd of annoHandles(o, ROT_GAP / s)) {
-    g.lineWidth = 1.2 / s;
-    g.strokeStyle = '#000';
+    g.lineWidth = 1.5 / s;
+    g.strokeStyle = MODE_COLORS.write;
     if (hd.kind === 'rotate') {
       g.beginPath();
       g.moveTo(hd.from[0], hd.from[1]);
       g.lineTo(hd.x, hd.y);
-      g.strokeStyle = '#ffb020';
       g.stroke();
-      g.strokeStyle = '#000';
     }
     g.beginPath();
     if (hd.kind === 'resize') {
@@ -820,7 +828,7 @@ function drawAnnoSelection(g, o, s) {
       g.fillStyle = '#fff';
     } else {
       g.arc(hd.x, hd.y, (hd.kind === 'rotate' ? 7 : 6.5) / s, 0, Math.PI * 2);
-      g.fillStyle = hd.kind === 'tail' ? '#ffb020' : hd.kind === 'rotate' ? '#e9ecf2' : '#fff';
+      g.fillStyle = hd.kind === 'tail' ? MODE_COLORS.write : '#fff';
     }
     g.fill();
     g.stroke();
@@ -862,7 +870,7 @@ function updateWriteHint() {
   const o = state.mode === 'write' ? selectedAnno() : null;
   let t = '下のボタンで追加。部品をタップで選択、何もない所のドラッグで画面移動、2本指で拡大';
   if (o?.type === 'arrow') t = 'ドラッグで移動、両端の丸で向きと長さを変更';
-  else if (o) t = 'ドラッグで移動、四隅で拡大縮小、上の丸で回転' + (o.type === 'bubble' ? '、オレンジの丸でしっぽ' : '');
+  else if (o) t = 'ドラッグで移動、四隅で拡大縮小、上の丸で回転' + (o.type === 'bubble' ? '、塗りつぶした丸でしっぽ' : '');
   $('writeHint').textContent = state.work ? t : '';
 }
 
@@ -1588,7 +1596,12 @@ function markChanged() {
 
 function renderStrip() {
   const n = state.images.length;
-  $('strip').hidden = n <= 1; // 1枚だけのときは一覧を出さない（表示部分を広く取る）
+  if (!n) state.stripOpen = false;
+  $('strip').hidden = !state.stripOpen;
+  $('fileInfoBtn').disabled = n === 0;
+  $('fileInfoBtn').setAttribute('aria-expanded', String(!!state.stripOpen));
+  $('fileCount').hidden = n === 0;
+  $('fileCount').textContent = `${state.cur + 1}/${n}枚`;
   if (!n) return;
   const thumbs = $('thumbs');
   thumbs.replaceChildren(
@@ -2043,6 +2056,7 @@ function updateUI() {
   for (const b of $('toolSeg').children) b.setAttribute('aria-checked', String(b.dataset.tool === state.tool));
   for (const b of $('effectSeg').children) b.setAttribute('aria-checked', String(b.dataset.effect === state.effect));
   $('stage').dataset.tool = state.mode === 'write' ? 'write' : state.tool;
+  document.body.dataset.mode = state.mode;
   for (const b of $('modeSeg').children) b.setAttribute('aria-checked', String(b.dataset.mode === state.mode));
   $('hidePanel').hidden = state.mode !== 'hide';
   $('writePanel').hidden = state.mode !== 'write';
@@ -2107,6 +2121,14 @@ $('thumbs').addEventListener('click', (e) => {
   const t = e.target.closest('[data-index]');
   if (t && +t.dataset.index !== state.cur) selectImage(+t.dataset.index);
 });
+$('fileInfoBtn').addEventListener('click', () => {
+  state.stripOpen = !state.stripOpen;
+  renderStrip();
+});
+// 画像に触れたら一覧を閉じる
+view.addEventListener('pointerdown', () => {
+  if (state.stripOpen) { state.stripOpen = false; renderStrip(); }
+}, true);
 $('prevBtn').addEventListener('click', () => state.cur > 0 && selectImage(state.cur - 1));
 $('nextBtn').addEventListener('click', () => state.cur < state.images.length - 1 && selectImage(state.cur + 1));
 $('copyBtn').addEventListener('click', openCopy);

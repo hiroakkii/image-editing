@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <meta name="theme-color" content="#15171c">
+  <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="モザイク編集">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -16,11 +16,13 @@
 </head>
 <body>
   <header class="topbar">
-    <button id="openBtn" class="btn primary" type="button">開く</button>
-    <div class="fileinfo">
+    <button id="openBtn" class="btn open" type="button" aria-label="画像を開く">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/><path d="M12 10.5v5M9.5 13h5"/></svg><span class="lbl">開く</span>
+    </button>
+    <button id="fileInfoBtn" class="fileinfo" type="button" aria-expanded="false" aria-controls="strip" disabled>
       <span id="fileName" class="filename">画像未選択</span>
-      <span id="fileMeta" class="filemeta"></span>
-    </div>
+      <span class="filemeta"><span id="fileCount" class="filecount" hidden></span><span id="fileMeta"></span></span>
+    </button>
     <button id="undoBtn" class="icon" type="button" aria-label="元に戻す" title="元に戻す" disabled>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
     </button>
@@ -42,42 +44,38 @@
       <span id="zoomLabel">100%</span>
       <button id="oneBtn" type="button">等倍</button>
     </div>
+  <section class="strip" id="strip" aria-label="読み込んだ画像の一覧" hidden>
+      <div class="strip-head">
+        <span id="stripCount" class="strip-count">1 / 1</span>
+        <div class="meter-wrap" title="読み込める量（枚数・合計サイズ）">
+          <div class="meter" id="meter"><div id="meterBar"></div></div>
+          <span id="meterText" class="meter-text"></span>
+        </div>
+        <button id="copyBtn" class="btn small" type="button" disabled>他にも適用</button>
+        <button id="batchBtn" class="btn small accent" type="button" disabled>まとめて保存</button>
+      </div>
+      <div class="strip-row">
+        <button id="prevBtn" class="icon small" type="button" aria-label="前の画像">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <div id="thumbs" class="thumbs"></div>
+        <button id="nextBtn" class="icon small" type="button" aria-label="次の画像">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+      </div>
+    </section>
   </main>
 
-  <section class="strip" id="strip" aria-label="読み込んだ画像" hidden>
-    <div class="strip-head">
-      <span id="stripCount" class="strip-count">1 / 1</span>
-      <div class="meter-wrap" title="読み込める量（枚数・合計サイズ）">
-        <div class="meter" id="meter"><div id="meterBar"></div></div>
-        <span id="meterText" class="meter-text"></span>
-      </div>
-      <button id="copyBtn" class="btn small" type="button" disabled>他にも適用</button>
-      <button id="batchBtn" class="btn small accent" type="button" disabled>まとめて保存</button>
-    </div>
-    <div class="strip-row">
-      <button id="prevBtn" class="icon small" type="button" aria-label="前の画像">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
-      </button>
-      <div id="thumbs" class="thumbs"></div>
-      <button id="nextBtn" class="icon small" type="button" aria-label="次の画像">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
-      </button>
-    </div>
-  </section>
 
   <section class="panel" aria-label="編集ツール">
-    <div class="seg mode" id="modeSeg" role="radiogroup" aria-label="編集メニュー">
-      <button type="button" data-mode="hide">隠す</button>
-      <button type="button" data-mode="write">書き込む</button>
-    </div>
     <div id="hidePanel" class="subpanel">
-    <div class="seg" id="toolSeg" role="radiogroup" aria-label="範囲の指定方法">
-      <button type="button" data-tool="pan">移動</button>
-      <button type="button" data-tool="lasso">なぞる</button>
-      <button type="button" data-tool="rect">四角</button>
-      <button type="button" data-tool="ellipse">楕円</button>
+    <div class="tools" id="toolSeg" role="radiogroup" aria-label="範囲の指定方法">
+      <button type="button" data-tool="pan"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11.5V4a1.5 1.5 0 0 1 3 0v8"/><path d="M14 6.5a1.5 1.5 0 0 1 3 0V13"/><path d="M17 9a1.5 1.5 0 0 1 3 0v5a7 7 0 0 1-7 7h-1a7 7 0 0 1-5.6-2.8L4 14.5a1.6 1.6 0 0 1 2.4-2L8 14"/></svg>移動</button>
+      <button type="button" data-tool="lasso"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12c0-4 3.5-7 8-7s7 2.5 7 5.5S16.5 16 12 16c-2 0-3.5-.4-4.5-1"/><path d="M7.5 15c-1.5 1.2-1.2 3.5.8 4.2 1.2.4 1.7 1.3 1.2 2.3"/></svg>なぞる</button>
+      <button type="button" data-tool="rect"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke-dasharray="3 2.5"/></svg>四角</button>
+      <button type="button" data-tool="ellipse"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="8.5" ry="6" stroke-dasharray="3 2.5"/></svg>楕円</button>
     </div>
-    <div class="seg" id="effectSeg" role="radiogroup" aria-label="編集の種類">
+    <div class="pills" id="effectSeg" role="radiogroup" aria-label="編集の種類">
       <button type="button" data-effect="mosaic">モザイク</button>
       <button type="button" data-effect="blur">ぼかし</button>
       <button type="button" data-effect="fill">塗りつぶし</button>
@@ -105,16 +103,16 @@
     </div>
 
     <div id="writePanel" class="subpanel" hidden>
-      <div class="addrow" id="addRow">
-        <button type="button" data-add="text"><span class="ai">A</span>文字</button>
-        <button type="button" data-add="bubble"><span class="ai">💬</span>吹き出し</button>
-        <button type="button" data-add="arrow"><span class="ai">➚</span>矢印</button>
-        <button type="button" data-add="frame"><span class="ai">◯</span>枠</button>
-        <button type="button" data-add="stamp"><span class="ai">★</span>スタンプ</button>
+      <div class="tools five" id="addRow">
+        <button type="button" data-add="text"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4h14v2M12 4v16M9 20h6"/></svg>文字</button>
+        <button type="button" data-add="bubble"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-5 4v-4.2A2.5 2.5 0 0 1 4 13.5z"/></svg>吹き出し</button>
+        <button type="button" data-add="arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19 19 5M10 5h9v9"/></svg>矢印</button>
+        <button type="button" data-add="frame"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9" ry="7"/></svg>枠</button>
+        <button type="button" data-add="stamp"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.5 2.9 1-6.1L3.1 9.5l6.1-.9z"/></svg>スタンプ</button>
       </div>
       <p class="hint" id="writeHint"></p>
       <div id="propPanel" class="props" hidden>
-        <div class="seg small" id="pTabs" data-for="bubble" aria-label="設定の切り替え">
+        <div class="subtabs" id="pTabs" data-for="bubble" aria-label="設定の切り替え">
           <button type="button" data-tab="text">文字</button>
           <button type="button" data-tab="shape">吹き出しの形・色</button>
         </div>
@@ -170,6 +168,15 @@
       </div>
     </div>
   </section>
+
+  <nav class="tabbar" id="modeSeg" role="radiogroup" aria-label="編集メニュー">
+    <button type="button" data-mode="hide">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 12h18M9 5v14M15 5v14"/></svg>隠す
+    </button>
+    <button type="button" data-mode="write">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4l5 5L9 20H4v-5z"/><path d="M13 6l5 5"/></svg>書き込む
+    </button>
+  </nav>
 
   <dialog id="saveDlg">
     <form method="dialog" class="dlg">
