@@ -35,6 +35,7 @@ const state = {
   cur: -1,
   mode: 'hide', // 'hide'（隠す） | 'write'（書き込む）
   annoSel: null, // 選択中の書き込みの id
+  sortOrder: 'name', // 一覧の並び順：'name'（名前順）| 'name-desc'（名前の逆順）| 'added'（選んだ順）
   file: null,
   format: null, // { kind, ext, baseName, origName }
   W: 0,
@@ -1444,6 +1445,19 @@ function releaseCanvas(c) {
   if (c) { c.width = 0; c.height = 0; }
 }
 
+// 数字は数として比べる（IMG_2 → IMG_10 の順）。大文字・小文字、全角・半角の違いは区別しない
+const nameCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
+
+/** 一覧を並び順の設定に合わせて並べ替える（表示中の画像はそのまま） */
+function sortImages() {
+  const cur = curImage();
+  const dir = state.sortOrder === 'name-desc' ? -1 : 1;
+  state.images.sort((a, b) =>
+    state.sortOrder === 'added' ? a.id - b.id : dir * (nameCollator.compare(a.file.name, b.file.name) || a.id - b.id),
+  );
+  state.cur = cur ? state.images.indexOf(cur) : -1;
+}
+
 function totalBytes() {
   return state.images.reduce((s, im) => s + im.file.size, 0);
 }
@@ -1498,7 +1512,10 @@ async function addFiles(fileList) {
   if (skipped) msgs.push(`上限（${MAX_IMAGES}枚・${formatBytes(MAX_TOTAL_BYTES)}）を超えるため ${skipped}枚は読み込みませんでした`);
   if (big) msgs.push(`${big}枚はとても大きいため、iPhoneでは正しく処理できない場合があります`);
   toast(msgs.join('。') || '読み込める画像がありませんでした', !!(failed || skipped || big || !added), (failed || skipped || big) ? 6000 : 2500);
-  if (added) await selectImage(firstNew); // 追加した最初の画像を表示
+  // 並び順に入れ直し、追加した中で一番前に来た画像を表示する
+  const newOnes = state.images.slice(firstNew);
+  sortImages();
+  if (added) await selectImage(Math.min(...newOnes.map((im) => state.images.indexOf(im))));
   renderStrip();
   updateUI();
 }
@@ -1623,6 +1640,19 @@ function markChanged() {
   $('redoBtn').disabled = !im?.redo.length;
 }
 
+/** サムネイルの下に出す短い名前。全角文字は半角2文字分として、末尾を残して縮める */
+function shortName(base, max = 6) {
+  const w = (ch) => (/[\u0000-\u00ff]/.test(ch) ? 1 : 2);
+  const chars = [...base];
+  if (chars.reduce((n, ch) => n + w(ch), 0) <= max) return base;
+  let tail = '', n = 0;
+  for (let i = chars.length - 1; i >= 0 && n + w(chars[i]) <= max - 1; i--) {
+    tail = chars[i] + tail;
+    n += w(chars[i]);
+  }
+  return '…' + tail;
+}
+
 function renderStrip() {
   const n = state.images.length;
   if (!n) state.stripOpen = false;
@@ -1650,6 +1680,12 @@ function renderStrip() {
       const badge = document.createElement('span');
       badge.className = 'badge ' + (isUnsaved(im) ? 'edited' : isEdited(im) ? 'saved' : '');
       b.append(badge);
+      // ファイル名の末尾（番号の部分が見えるように、長い名前は前を省く）
+      const base = im.format.baseName;
+      const cap = document.createElement('span');
+      cap.className = 'thumb-name';
+      cap.textContent = shortName(base);
+      b.append(cap);
       if (i === state.cur) {
         const x = document.createElement('span');
         x.className = 'remove';
@@ -2165,6 +2201,13 @@ $('prevBtn').addEventListener('click', () => state.cur > 0 && selectImage(state.
 $('nextBtn').addEventListener('click', () => state.cur < state.images.length - 1 && selectImage(state.cur + 1));
 $('copyBtn').addEventListener('click', openCopy);
 $('removeSavedBtn').addEventListener('click', removeSaved);
+$('sortSelect').value = state.sortOrder;
+$('sortSelect').addEventListener('change', (e) => {
+  state.sortOrder = e.target.value;
+  savePrefs();
+  sortImages();
+  renderStrip();
+});
 $('removeAllBtn').addEventListener('click', removeAll);
 $('copyList').addEventListener('change', updateCopyCount);
 $('copyOps').addEventListener('change', updateCopyCount);
@@ -2210,13 +2253,14 @@ function loadPrefs() {
     if (p.effect in EFFECTS) state.effect = p.effect;
     if (p.strength) Object.assign(state.strength, p.strength);
     if (/^#[0-9a-f]{6}$/i.test(p.color || '')) state.color = p.color;
+    if (['name', 'name-desc', 'added'].includes(p.sortOrder)) state.sortOrder = p.sortOrder;
   } catch { /* 無視 */ }
 }
 
 function savePrefs() {
   try {
     localStorage.setItem('mosaic-prefs', JSON.stringify({
-      tool: state.tool, effect: state.effect, strength: state.strength, color: state.color,
+      tool: state.tool, effect: state.effect, strength: state.strength, color: state.color, sortOrder: state.sortOrder,
     }));
   } catch { /* 無視 */ }
 }

@@ -523,3 +523,18 @@ body.anno-selected #addRow button svg { width: 19px; height: 19px; }
 
 /* 一覧の下：まとめて外す */
 .strip-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.strip-foot { flex-wrap: wrap; align-items: center; }
+.strip-foot .sort { margin-right: auto; display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.strip-foot select { font-size: 12.5px; padding: 5px 6px; max-width: 190px; }
+.thumb { height: 70px; display: flex; flex-direction: column; }
+.thumb img { height: 54px; flex: none; }
+.thumb-name {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 9.5px; font-weight: 700; color: var(--ink); background: var(--surface);
+  white-space: nowrap; overflow: hidden; padding: 0 1px; line-height: 1;
+}
+.thumb.active .thumb-name { background: var(--accent-soft); color: var(--accent-ink); }
+.badge { bottom: 18px; }
+.icon.small { height: 70px; }
+.strip-foot .sort { flex: 1 1 100%; margin-right: 0; }
+.strip-foot .sort select { flex: 1; max-width: none; }
