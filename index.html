@@ -39,6 +39,12 @@
       <p class="empty-title">「開く」から画像を選択</p>
       <p class="empty-sub">写真ライブラリ・ファイルのどちらからでも開けます。<br>画像はこの端末の中だけで処理され、外部に送信されません。</p>
     </div>
+    <button id="edgePrev" class="edge-nav prev" type="button" aria-label="前の画像" hidden>
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></span>
+    </button>
+    <button id="edgeNext" class="edge-nav next" type="button" aria-label="次の画像" hidden>
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></span>
+    </button>
     <div class="zoomctl" id="zoomCtl" hidden>
       <button id="fitBtn" type="button">全体</button>
       <span id="zoomLabel">100%</span>

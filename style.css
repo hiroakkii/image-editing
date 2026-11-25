@@ -538,3 +538,47 @@ body.anno-selected #addRow button svg { width: 19px; height: 19px; }
 .icon.small { height: 70px; }
 .strip-foot .sort { flex: 1 1 100%; margin-right: 0; }
 .strip-foot .sort select { flex: 1; max-width: none; }
+
+/* ---------- 画面の左右の「前へ・次へ」 ---------- */
+/* 押せる範囲は 44×88px、見た目は小さな半透明のつまみ */
+.edge-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 4;
+  width: 44px;
+  height: 88px;
+  margin-top: -44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  transition: opacity .15s;
+}
+.edge-nav.prev { left: env(safe-area-inset-left); justify-content: flex-start; }
+.edge-nav.next { right: env(safe-area-inset-right); justify-content: flex-end; }
+.edge-nav span {
+  width: 28px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, .78);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  box-shadow: 0 2px 8px rgba(30, 34, 51, .12);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.edge-nav.prev span { border-left: 0; border-radius: 0 12px 12px 0; }
+.edge-nav.next span { border-right: 0; border-radius: 12px 0 0 12px; }
+.edge-nav svg { width: 20px; height: 20px; stroke-width: 2.5; }
+.edge-nav:active span { background: var(--accent-soft); color: var(--accent-ink); }
+/* なぞる・ピンチなどの操作中は反応させない */
+.stage.busy .edge-nav { pointer-events: none; opacity: .3; }
+/* 明るい画像・暗い画像のどちらの上でも見えるよう、半透明の濃い色＋白い矢印にする */
+.edge-nav span { background: rgba(30, 34, 51, .52); border: 1px solid rgba(255, 255, 255, .55); color: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, .25); }
+.edge-nav.prev span { border-left: 0; }
+.edge-nav.next span { border-right: 0; }
+.edge-nav:active span { background: var(--accent); color: #fff; }

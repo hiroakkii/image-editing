@@ -289,6 +289,7 @@ view.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   try { view.setPointerCapture(e.pointerId); } catch { /* 無視 */ }
   pointers.set(e.pointerId, localPos(e));
+  setStageBusy(true);
 
   if (pointers.size === 2) {
     // 2本目の指: 描きかけを取り消してピンチ操作へ
@@ -474,6 +475,7 @@ function rectFrom(a, b, type) {
 function endPointer(e) {
   if (!pointers.has(e.pointerId)) return;
   pointers.delete(e.pointerId);
+  if (!pointers.size) setStageBusy(false);
   if (!gesture) return;
 
   if (gesture.type === 'pinch') {
@@ -537,6 +539,7 @@ window.addEventListener('keydown', (e) => {
   else if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); openSave(); }
+  else if (!mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); stepImage(e.key === 'ArrowLeft' ? -1 : 1); }
   else if (state.mode === 'write') {
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteAnno(); }
     else if (e.key === 'Escape') { state.annoSel = null; syncProps(); requestDraw(); }
@@ -1656,6 +1659,7 @@ function shortName(base, max = 6) {
 function renderStrip() {
   const n = state.images.length;
   if (!n) state.stripOpen = false;
+  if (n < 2) $('edgePrev').hidden = $('edgeNext').hidden = true;
   $('strip').hidden = !state.stripOpen;
   $('fileInfoBtn').disabled = n === 0;
   $('fileInfoBtn').setAttribute('aria-expanded', String(!!state.stripOpen));
@@ -1706,6 +1710,8 @@ function renderStrip() {
   const mb = (v) => (v / 1048576).toFixed(v < 10 * 1048576 ? 1 : 0);
   $('meterText').textContent = `${n}/${MAX_IMAGES}枚・${mb(bytes)}/${mb(MAX_TOTAL_BYTES)}MB`;
   $('stripCount').textContent = `${state.cur + 1} / ${n}`;
+  $('edgePrev').hidden = n < 2 || state.cur <= 0;
+  $('edgeNext').hidden = n < 2 || state.cur >= n - 1;
   $('prevBtn').disabled = state.cur <= 0;
   $('nextBtn').disabled = state.cur >= n - 1;
   const edited = state.images.filter(isEdited).length;
@@ -2189,6 +2195,50 @@ $('thumbs').addEventListener('click', (e) => {
   const t = e.target.closest('[data-index]');
   if (t && +t.dataset.index !== state.cur) selectImage(+t.dataset.index);
 });
+/* ---------- 画面の左右の「前へ・次へ」 ---------- */
+
+/** なぞる・ピンチなどの操作中は、左右のボタンを反応させない（誤タップ防止） */
+function setStageBusy(on) {
+  $('stage').classList.toggle('busy', on);
+}
+
+let stepping = false;
+async function stepImage(d) {
+  const i = state.cur + d;
+  if (stepping || i < 0 || i >= state.images.length) return;
+  stepping = true; // 読み込み中に続けて押されても、1枚ずつ進む
+  try {
+    await selectImage(i);
+  } finally {
+    stepping = false;
+  }
+  const im = curImage();
+  if (im) toast(`${state.cur + 1}/${state.images.length}　${im.file.name}`, false, 1400);
+}
+
+for (const [id, d] of [['edgePrev', -1], ['edgeNext', 1]]) {
+  const b = $(id);
+  let start = null;
+  // 指を置いて、ほとんど動かさずに離したときだけ切り替える（ボタンから始めたドラッグでは切り替えない）
+  b.addEventListener('pointerdown', (e) => {
+    start = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    try { b.setPointerCapture(e.pointerId); } catch { /* 無視 */ }
+  });
+  b.addEventListener('pointerup', (e) => {
+    const s0 = start;
+    start = null;
+    if (!s0 || s0.id !== e.pointerId) return;
+    const r = b.getBoundingClientRect();
+    const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    if (inside && Math.hypot(e.clientX - s0.x, e.clientY - s0.y) < 12) stepImage(d);
+  });
+  b.addEventListener('pointercancel', () => { start = null; });
+  b.addEventListener('click', (e) => {
+    // キーボード操作（Enter・スペース）のときだけ click で切り替える
+    if (e.detail === 0) stepImage(d);
+  });
+}
+
 $('fileInfoBtn').addEventListener('click', () => {
   state.stripOpen = !state.stripOpen;
   renderStrip();
