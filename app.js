@@ -1,8 +1,11 @@
-import { computePatch, distToOutline, hitInside, resample, selBounds, tracePath } from './effects.js';
-import {
+'use strict';
+
+// 画像処理と書き込みの描画は effects.js・annotate.js（index.html で先に読み込む）から使う
+const { computePatch, distToOutline, hitInside, resample, selBounds, tracePath } = window.ImageEffects;
+const {
   BUBBLE_STYLES, BUILTIN_PRESETS, STAMPS, STYLE_DEFAULTS, annoHandles, annoOutline, applyPreset, createAnno, drawAnnos,
   drawPresetThumb, fitBubble, hitAnno, presetFromBubble, scaleAnno, shapeParams, toLocal,
-} from './annotate.js';
+} = window.ImageAnnotate;
 
 const $ = (id) => document.getElementById(id);
 

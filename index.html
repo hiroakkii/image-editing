@@ -314,6 +314,9 @@
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="app.js"></script>
+  <!-- 通常のスクリプトとして順に読み込む（index.html をファイルとして直接開いても動くように） -->
+  <script src="effects.js"></script>
+  <script src="annotate.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

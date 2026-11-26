@@ -1,14 +1,17 @@
 // 書き込み（文字・吹き出し・矢印・枠・スタンプ）の描画と当たり判定。
 // 座標はすべて画像のピクセル座標。x, y は部品の中心、rot は回転（ラジアン）。
+// ファイルを直接開いても動くよう、モジュールではなく通常のスクリプトとして読み込み、window.ImageAnnotate に公開する。
+'use strict';
 
-export const FONTS = {
+(() => {
+const FONTS = {
   gothic: '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif',
   mincho: '"Hiragino Mincho ProN", "Noto Serif JP", "Yu Mincho", serif',
   maru: '"Hiragino Maru Gothic ProN", "M PLUS Rounded 1c", "Kosugi Maru", "Noto Sans JP", sans-serif',
 };
 const EMOJI_FONT = '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
 
-export const STAMPS = ['❗', '❓', '‼️', '⭐', '❤️', '👍', '👉', '👆', '✅', '❌', '⚠️', '💡', '😊', '😂', '😢', '😡', '🎉', '🔥', '💦', '✨'];
+const STAMPS = ['❗', '❓', '‼️', '⭐', '❤️', '👍', '👉', '👆', '✅', '❌', '⚠️', '💡', '😊', '😂', '😢', '😡', '🎉', '🔥', '💦', '✨'];
 
 const LH = 1.35; // 行間（文字サイズに対する倍率）
 
@@ -20,7 +23,7 @@ const ROTATE_V = 'ー－-—―‐〜～…‥：:;；=＝()（）[]［］{}｛�
 const PUNCT_V = '、。，．,.';
 const SMALL_V = 'ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ';
 
-export function fontStr(o, size = o.size) {
+function fontStr(o, size = o.size) {
   return `${o.bold ? 700 : 400} ${size}px ${FONTS[o.font] || FONTS.gothic}`;
 }
 
@@ -33,7 +36,7 @@ function measurer() {
  * 文字の配置を計算する。
  * 横書き: maxW を超えると折り返す。縦書き: maxH を超えると次の列（左）へ送る。
  */
-export function layoutText(o, maxW = 0, maxH = 0) {
+function layoutText(o, maxW = 0, maxH = 0) {
   const g = measurer();
   g.font = fontStr(o);
   const s = o.size;
@@ -139,7 +142,7 @@ function roundRectPath(g, x, y, w, h, r) {
 
 /* 叫び・思考の形。n: トゲ／ふくらみの数、depth: 長さ／ふくらみ（短辺に対する割合）、irr: 不揃いさ(0〜1) */
 
-export const BUBBLE_STYLES = {
+const BUBBLE_STYLES = {
   shout: [
     { style: 'zigzag', label: 'ギザギザ' },
     { style: 'burst', label: '爆発' },
@@ -151,7 +154,7 @@ export const BUBBLE_STYLES = {
   ],
 };
 
-export const STYLE_DEFAULTS = {
+const STYLE_DEFAULTS = {
   zigzag: { n: 16, depth: 0.2, irr: 0 },
   burst: { n: 22, depth: 0.3, irr: 0.8 },
   jolt: { n: 11, depth: 0.24, irr: 0.7 },
@@ -160,7 +163,7 @@ export const STYLE_DEFAULTS = {
 };
 
 /** 見本（最初から入っている吹き出し） */
-export const BUILTIN_PRESETS = [
+const BUILTIN_PRESETS = [
   { name: '①ギザギザ（均一）', shape: 'shout', style: 'zigzag', n: 16, depth: 0.2, irr: 0, seed: 3 },
   { name: '②ギザギザ（不均一・弱め）', shape: 'shout', style: 'zigzag', n: 16, depth: 0.22, irr: 0.5, seed: 7 },
   { name: '③ギザギザ（不均一・強め）', shape: 'shout', style: 'zigzag', n: 13, depth: 0.26, irr: 1, seed: 11 },
@@ -176,7 +179,7 @@ export const BUILTIN_PRESETS = [
 ];
 
 /** 形の値（足りない値は種類ごとの初期値で補う） */
-export function shapeParams(o) {
+function shapeParams(o) {
   const list = BUBBLE_STYLES[o.shape] || [];
   const style = list.some((x) => x.style === o.style) ? o.style : list[0]?.style;
   const d = STYLE_DEFAULTS[style] || {};
@@ -382,7 +385,7 @@ function drawBubble(g, o) {
 }
 
 /** 文字が収まるよう吹き出しを広げる（横書きは縦に、縦書きは横に伸ばす。縮めはしない） */
-export function fitBubble(o) {
+function fitBubble(o) {
   const f = innerFactor(o);
   const pad = o.size * 0.5;
   const ib = innerBox(o);
@@ -446,7 +449,7 @@ function drawStamp(g, o) {
   g.fillText(o.char, 0, 0);
 }
 
-export function drawAnno(g, o) {
+function drawAnno(g, o) {
   g.save();
   if (o.type === 'arrow') drawArrow(g, o);
   else {
@@ -460,14 +463,14 @@ export function drawAnno(g, o) {
   g.restore();
 }
 
-export function drawAnnos(g, annos) {
+function drawAnnos(g, annos) {
   for (const o of annos) drawAnno(g, o);
 }
 
 /* ---------------- 形・当たり判定・ハンドル ---------------- */
 
 /** 回転前の外枠の大きさ */
-export function boxSize(o) {
+function boxSize(o) {
   if (o.type === 'text') {
     const L = layoutText(o);
     const pad = o.outline ? o.size * 0.15 : 0;
@@ -477,13 +480,13 @@ export function boxSize(o) {
   return { w: o.w, h: o.h };
 }
 
-export function toLocal(o, x, y) {
+function toLocal(o, x, y) {
   const c = Math.cos(-(o.rot || 0)), s = Math.sin(-(o.rot || 0));
   const dx = x - o.x, dy = y - o.y;
   return [dx * c - dy * s, dx * s + dy * c];
 }
 
-export function toWorld(o, lx, ly) {
+function toWorld(o, lx, ly) {
   const c = Math.cos(o.rot || 0), s = Math.sin(o.rot || 0);
   return [o.x + lx * c - ly * s, o.y + lx * s + ly * c];
 }
@@ -496,7 +499,7 @@ function distToSeg(x, y, ax, ay, bx, by) {
   return Math.hypot(x - ax - t * dx, y - ay - t * dy);
 }
 
-export function hitAnno(o, x, y, tol) {
+function hitAnno(o, x, y, tol) {
   if (o.type === 'arrow') return distToSeg(x, y, o.x1, o.y1, o.x2, o.y2) <= o.width / 2 + tol;
   const [lx, ly] = toLocal(o, x, y);
   const { w, h } = boxSize(o);
@@ -506,7 +509,7 @@ export function hitAnno(o, x, y, tol) {
 }
 
 /** 選択中に表示するハンドル（画像座標）。rotGap は回転ハンドルまでの距離 */
-export function annoHandles(o, rotGap) {
+function annoHandles(o, rotGap) {
   if (o.type === 'arrow') return [{ kind: 'end1', x: o.x1, y: o.y1 }, { kind: 'end2', x: o.x2, y: o.y2 }];
   const { w, h } = boxSize(o);
   const hs = [];
@@ -525,14 +528,14 @@ export function annoHandles(o, rotGap) {
 }
 
 /** 選択枠（回転した四角形）の4隅 */
-export function annoOutline(o) {
+function annoOutline(o) {
   if (o.type === 'arrow') return null;
   const { w, h } = boxSize(o);
   return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => toWorld(o, (sx * w) / 2, (sy * h) / 2));
 }
 
 /** 別サイズの画像へコピーするときの拡大縮小 */
-export function scaleAnno(o, kx, ky) {
+function scaleAnno(o, kx, ky) {
   const a = structuredClone(o);
   const k = (kx + ky) / 2;
   if (a.type === 'arrow') {
@@ -550,7 +553,7 @@ export function scaleAnno(o, kx, ky) {
 }
 
 /** 新しい部品。c は配置する中心、base は画像の短辺 */
-export function createAnno(type, c, base, extra = {}) {
+function createAnno(type, c, base, extra = {}) {
   const id = Math.random().toString(36).slice(2, 10);
   const r = (v) => Math.max(1, Math.round(v));
   const common = { id, x: c[0], y: c[1], rot: 0 };
@@ -583,7 +586,7 @@ const STYLE_KEYS = ['fill', 'line', 'font', 'color', 'outline', 'bold', 'vertica
  * 吹き出しの設定を登録用に取り出す。
  * 大きさ・線の太さ・文字サイズは画像の短辺に対する割合で記録し、サイズの違う画像でも同じ見た目になるようにする
  */
-export function presetFromBubble(o, base) {
+function presetFromBubble(o, base) {
   const p = {};
   for (const k of SHAPE_KEYS) if (o[k] !== undefined) p[k] = o[k];
   for (const k of STYLE_KEYS) if (o[k] !== undefined) p[k] = o[k];
@@ -597,7 +600,7 @@ export function presetFromBubble(o, base) {
 }
 
 /** 登録した設定を吹き出しに当てはめる（文字の内容・位置・回転はそのまま） */
-export function applyPreset(o, p, base) {
+function applyPreset(o, p, base) {
   for (const k of SHAPE_KEYS) if (p[k] !== undefined) o[k] = p[k];
   if (p.builtin) return; // 見本は形だけを変える
   for (const k of STYLE_KEYS) if (p[k] !== undefined) o[k] = p[k];
@@ -609,7 +612,7 @@ export function applyPreset(o, p, base) {
 }
 
 /** 登録一覧に表示する小さな見本を描く */
-export function drawPresetThumb(canvas, p) {
+function drawPresetThumb(canvas, p) {
   const g = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   g.clearRect(0, 0, W, H);
@@ -633,3 +636,6 @@ export function drawPresetThumb(canvas, p) {
   drawAnno(g, o);
   g.restore();
 }
+
+window.ImageAnnotate = { FONTS, STAMPS, fontStr, layoutText, BUBBLE_STYLES, STYLE_DEFAULTS, BUILTIN_PRESETS, shapeParams, fitBubble, drawAnno, drawAnnos, boxSize, toLocal, toWorld, hitAnno, annoHandles, annoOutline, scaleAnno, createAnno, presetFromBubble, applyPreset, drawPresetThumb };
+})();

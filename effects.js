@@ -1,8 +1,11 @@
 // 画像処理（モザイク・ぼかし・塗りつぶし）と範囲マスクによる合成。
 // すべて「画像のピクセル座標」で処理する。範囲外のピクセルは一切変更しない。
+// ファイルを直接開いても動くよう、モジュールではなく通常のスクリプトとして読み込み、window.ImageEffects に公開する。
+'use strict';
 
+(() => {
 /** 選択範囲の外接矩形（小数）を返す */
-export function selBounds(sel) {
+function selBounds(sel) {
   if (sel.type === 'lasso') {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const [x, y] of sel.pts) {
@@ -17,7 +20,7 @@ export function selBounds(sel) {
 }
 
 /** 選択範囲のパスを ctx に作る（ox, oy だけずらす） */
-export function tracePath(ctx, sel, ox = 0, oy = 0) {
+function tracePath(ctx, sel, ox = 0, oy = 0) {
   ctx.beginPath();
   if (sel.type === 'lasso') {
     const p = sel.pts;
@@ -32,7 +35,7 @@ export function tracePath(ctx, sel, ox = 0, oy = 0) {
 }
 
 /** 選択範囲の内側か（移動判定用）。なぞった範囲は塗りと同じ nonzero 規則 */
-export function hitInside(sel, x, y) {
+function hitInside(sel, x, y) {
   if (sel.type === 'lasso') {
     const p = sel.pts;
     let wn = 0;
@@ -55,7 +58,7 @@ export function hitInside(sel, x, y) {
 }
 
 /** 点からなぞった線（閉じた多角形）までの最短距離 */
-export function distToOutline(pts, x, y) {
+function distToOutline(pts, x, y) {
   let best = Infinity;
   for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
     const [ax, ay] = pts[j], [bx, by] = pts[i];
@@ -70,7 +73,7 @@ export function distToOutline(pts, x, y) {
 }
 
 /** 長く伸ばされた区間に点を補って、続けて変形しても形がなめらかになるようにする */
-export function resample(pts, maxSeg) {
+function resample(pts, maxSeg) {
   const out = [];
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i], b = pts[(i + 1) % pts.length];
@@ -87,7 +90,7 @@ export function resample(pts, maxSeg) {
 /* ---------------- モザイク ---------------- */
 
 /** n×n ブロックごとに平均色で塗る（アルファ加重平均）。グリッドは配列の左上が基準 */
-export function pixelate(d, w, h, n) {
+function pixelate(d, w, h, n) {
   for (let by = 0; by < h; by += n) {
     const bh = Math.min(n, h - by);
     for (let bx = 0; bx < w; bx += n) {
@@ -113,7 +116,7 @@ export function pixelate(d, w, h, n) {
 
 /* ---------------- ぼかし（ガウスぼかしを3回のボックスぼかしで近似） ---------------- */
 
-export function boxRadiiForGauss(sigma, n = 3) {
+function boxRadiiForGauss(sigma, n = 3) {
   const wIdeal = Math.sqrt((12 * sigma * sigma) / n + 1);
   let wl = Math.floor(wIdeal);
   if (wl % 2 === 0) wl--;
@@ -125,7 +128,7 @@ export function boxRadiiForGauss(sigma, n = 3) {
   return radii;
 }
 
-export function blurPad(sigma) {
+function blurPad(sigma) {
   return boxRadiiForGauss(sigma).reduce((s, r) => s + r, 0);
 }
 
@@ -160,7 +163,7 @@ function boxV(src, dst, w, h, r) {
   }
 }
 
-export function blurRGBA(d, w, h, sigma) {
+function blurRGBA(d, w, h, sigma) {
   let hasAlpha = false;
   for (let i = 3; i < d.length; i += 4) if (d[i] !== 255) { hasAlpha = true; break; }
   if (hasAlpha) {
@@ -197,7 +200,7 @@ function hexToRgb(hex) {
  * @param {{sel, effect, strength, color}} op
  * @param {(w:number,h:number)=>HTMLCanvasElement} makeCanvas
  */
-export function computePatch(srcCtx, W, H, op, makeCanvas) {
+function computePatch(srcCtx, W, H, op, makeCanvas) {
   const b = selBounds(op.sel);
   const x0 = Math.max(0, Math.floor(b.x0)), y0 = Math.max(0, Math.floor(b.y0));
   const x1 = Math.min(W, Math.ceil(b.x1)), y1 = Math.min(H, Math.ceil(b.y1));
@@ -262,3 +265,6 @@ export function computePatch(srcCtx, W, H, op, makeCanvas) {
   }
   return { data: orig, x: x0, y: y0 };
 }
+
+window.ImageEffects = { selBounds, tracePath, hitInside, distToOutline, resample, pixelate, boxRadiiForGauss, blurPad, blurRGBA, computePatch };
+})();
