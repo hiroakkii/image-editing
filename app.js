@@ -35,6 +35,7 @@ const state = {
   cur: -1,
   mode: 'hide', // 'hide'（隠す） | 'write'（書き込む）
   annoSel: null, // 選択中の書き込みの id
+  cropAspect: 'free', // トリミングの比率
   sortOrder: 'name', // 一覧の並び順：'name'（名前順）| 'name-desc'（名前の逆順）| 'added'（選んだ順）
   file: null,
   format: null, // { kind, ext, baseName, origName }
@@ -123,7 +124,11 @@ function draw() {
   const { s, tx, ty } = state.view;
 
   // 作業台の上に置いた紙のように、画像の下へ薄い影を付ける
-  const ir = [Math.round(tx * dpr), Math.round(ty * dpr), Math.round(state.W * s * dpr), Math.round(state.H * s * dpr)];
+  // トリミングしてある画像は、隠す・書き込む画面では切り抜いた範囲だけを表示する
+  const cim = curImage();
+  const clip = state.mode !== 'crop' && cim?.crop ? cim.crop : null;
+  const vr = clip || { x: 0, y: 0, w: state.W, h: state.H };
+  const ir = [Math.round((tx + vr.x * s) * dpr), Math.round((ty + vr.y * s) * dpr), Math.round(vr.w * s * dpr), Math.round(vr.h * s * dpr)];
   g.save();
   g.shadowColor = 'rgba(20, 30, 50, 0.22)';
   g.shadowBlur = 14 * dpr;
@@ -139,10 +144,18 @@ function draw() {
   g.setTransform(dpr * s, 0, 0, dpr * s, dpr * tx, dpr * ty);
   g.imageSmoothingEnabled = s < 2;
   g.imageSmoothingQuality = 'high';
+  if (clip) {
+    g.save();
+    g.beginPath();
+    g.rect(clip.x, clip.y, clip.w, clip.h);
+    g.clip();
+  }
   g.drawImage(state.work, 0, 0);
   if (state.preview && state.mode === 'hide') g.drawImage(state.preview.canvas, state.preview.x, state.preview.y);
   const annos = curAnnos();
   if (annos.length) drawAnnos(g, annos);
+  if (clip) g.restore();
+  if (state.mode === 'crop') drawCropOverlay(g, s);
   if (state.mode === 'write') {
     const o = selectedAnno();
     if (o) drawAnnoSelection(g, o, s);
@@ -245,8 +258,13 @@ const DEFORM_RADIUS = 60;
 function fit() {
   if (!state.work) return;
   const { w, h } = viewSize();
-  const s = Math.min(fitScale(), 8);
-  state.view = { s, tx: (w - state.W * s) / 2, ty: (h - state.H * s) / 2 };
+  const im = curImage();
+  const crop = state.mode === 'crop';
+  // トリミング画面では画像全体を、左右の「前へ・次へ」と大きさの表示に重ならない余白をとって表示する
+  const r = !crop && im?.crop ? im.crop : { x: 0, y: 0, w: state.W, h: state.H };
+  // 左右の「前へ・次へ」（幅44px）と枠の辺の間を24px以上あける
+  const s = Math.min((w - (crop ? 136 : 24)) / r.w, (h - (crop ? 76 : 24)) / r.h, 8);
+  state.view = { s, tx: (w - r.w * s) / 2 - r.x * s, ty: (h - r.h * s) / 2 - r.y * s + (crop ? 14 : 0) };
   requestDraw();
 }
 
@@ -299,7 +317,9 @@ view.addEventListener('pointerdown', (e) => {
     }
     if (gesture?.snap && gesture.changed) {
       curImage().annos = gesture.snap.annos; // 書き込みの移動などを取り消す
+      curImage().crop = gesture.snap.crop; // トリミングの変更も取り消す
       syncProps();
+      syncCropPanel();
     }
     const { mid, dist } = pinchInfo();
     gesture = { type: 'pinch', mid, dist, view: { ...state.view } };
@@ -313,6 +333,10 @@ view.addEventListener('pointerdown', (e) => {
   const forcePan = spaceDown || e.button === 1 || e.button === 2;
   if (state.mode === 'write' && !forcePan) {
     writePointerDown(p, sx, sy);
+    return;
+  }
+  if (state.mode === 'crop' && !forcePan) {
+    cropPointerDown(p);
     return;
   }
   const tool = forcePan ? 'pan' : state.tool;
@@ -446,6 +470,11 @@ view.addEventListener('pointermove', (e) => {
       };
       break;
     }
+    case 'c-move':
+    case 'c-resize':
+    case 'c-new':
+      cropPointerMove(toImage(sx, sy));
+      break;
     case 'a-move':
     case 'a-resize':
     case 'a-rotate':
@@ -484,6 +513,14 @@ function endPointer(e) {
   }
   const g = gesture;
   gesture = null;
+  if (g.type.startsWith('c-')) {
+    if (g.changed && JSON.stringify(curImage().crop) !== JSON.stringify(g.snap.crop)) {
+      pushHistory(curImage(), g.snap);
+      markChanged();
+    }
+    syncCropPanel();
+    return;
+  }
   if (g.type.startsWith('a-')) {
     if (g.changed) {
       pushHistory(curImage(), g.snap);
@@ -620,7 +657,7 @@ function rebuild() {
  * ======================================================= */
 
 function snapshot(im) {
-  return { ops: im.ops.slice(), annos: structuredClone(im.annos) };
+  return { ops: im.ops.slice(), annos: structuredClone(im.annos), crop: im.crop ? { ...im.crop } : null };
 }
 
 function pushHistory(im = curImage(), snap = im && snapshot(im)) {
@@ -636,7 +673,9 @@ function restoreSnapshot(im, snap) {
   im.ops.length = 0;
   im.ops.push(...snap.ops);
   im.annos = snap.annos;
+  im.crop = snap.crop ?? null;
   if (opsChanged && im === curImage()) rebuild();
+  if (im === curImage()) syncCropPanel();
   if (!im.annos.some((a) => a.id === state.annoSel)) state.annoSel = null;
 }
 
@@ -669,7 +708,7 @@ function redo() {
  * ======================================================= */
 
 const ROT_GAP = 30;
-const MODE_COLORS = { hide: '#3d48b8', write: '#0e8a85' }; // style.css の配色と合わせる // 回転ハンドルまでの距離（画面上 px）
+const MODE_COLORS = { hide: '#3d48b8', write: '#0e8a85', crop: '#a16207' }; // style.css の配色と合わせる // 回転ハンドルまでの距離（画面上 px）
 const PALETTE = ['#000000', '#ffffff', '#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#007aff', '#af52de', '#ff2d55'];
 
 const curAnnos = () => curImage()?.annos ?? [];
@@ -841,12 +880,19 @@ function drawAnnoSelection(g, o, s) {
 }
 
 /** 保存用に、編集後の画像へ書き込みを重ねたキャンバスを作る（書き込みがなければそのまま） */
+/** 保存用のキャンバス：編集後の画像に書き込みを重ね、トリミングの範囲で切り抜く（どちらもなければそのまま） */
 function withAnnos(work, im) {
-  if (!im.annos.length) return { canvas: work, temp: false };
-  const c = makeCanvas(im.W, im.H, work._cs);
+  if (!im.annos.length && !im.crop) return { canvas: work, temp: false };
+  const r = cropOf(im);
+  const c = makeCanvas(r.w, r.h, work._cs);
   const g = ctx2d(c);
-  g.putImageData(ctx2d(work).getImageData(0, 0, im.W, im.H), 0, 0);
-  drawAnnos(g, im.annos);
+  g.putImageData(ctx2d(work).getImageData(r.x, r.y, r.w, r.h), 0, 0); // 元のピクセルをそのまま写す
+  if (im.annos.length) {
+    g.save();
+    g.translate(-r.x, -r.y);
+    drawAnnos(g, im.annos);
+    g.restore();
+  }
   return { canvas: c, temp: true };
 }
 
@@ -1350,14 +1396,20 @@ function deleteAnno() {
 
 function setMode(m) {
   if (state.mode === m) return;
+  const wasCrop = state.mode === 'crop';
   state.mode = m;
   if (m === 'write') clearPreview();
-  else {
+  else if (m === 'crop') {
+    clearPreview();
+    state.annoSel = null;
+  } else {
     state.annoSel = null;
     schedulePreview();
   }
   syncProps();
+  syncCropPanel();
   updateUI();
+  if (wasCrop || m === 'crop') fit(); // 表示する範囲が変わるので合わせ直す
   requestDraw();
 }
 
@@ -1553,6 +1605,7 @@ async function selectImage(i) {
     fit();
     renderStrip();
     syncProps();
+    syncCropPanel();
     updateUI();
     schedulePreview();
   } catch (err) {
@@ -1632,7 +1685,7 @@ function formatBytes(n) {
  * ======================================================= */
 
 const curImage = () => state.images[state.cur];
-const isEdited = (im) => im.ops.length > 0 || im.annos.length > 0;
+const isEdited = (im) => im.ops.length > 0 || im.annos.length > 0 || !!im.crop;
 const isUnsaved = (im) => isEdited(im) && im.version !== im.savedVersion;
 
 function markChanged() {
@@ -1760,13 +1813,16 @@ function openCopy() {
   $('copyOps').disabled = !src.ops.length;
   $('copyAnnos').checked = src.annos.length > 0;
   $('copyAnnos').disabled = !src.annos.length;
+  $('copyCropN').textContent = src.crop ? `（${src.crop.w} × ${src.crop.h}）` : '（なし）';
+  $('copyCrop').checked = !!src.crop;
+  $('copyCrop').disabled = !src.crop;
   updateCopyCount();
   $('copyDlg').showModal();
 }
 
 function updateCopyCount() {
   const n = $('copyList').querySelectorAll('input:checked').length;
-  $('copyApplyBtn').disabled = n === 0 || !($('copyOps').checked || $('copyAnnos').checked);
+  $('copyApplyBtn').disabled = n === 0 || !($('copyOps').checked || $('copyAnnos').checked || $('copyCrop').checked);
   $('copyApplyBtn').textContent = `${n}枚に適用`;
 }
 
@@ -1780,6 +1836,10 @@ function applyCopy() {
     if ($('copyOps').checked) for (const op of src.ops) im.ops.push(same ? structuredClone(op) : scaleOp(op, kx, ky));
     if ($('copyAnnos').checked) {
       for (const a of src.annos) im.annos.push({ ...(same ? structuredClone(a) : scaleAnno(a, kx, ky)), id: Math.random().toString(36).slice(2, 10) });
+    }
+    if ($('copyCrop').checked && src.crop) {
+      const c = src.crop;
+      setCrop(im, { x: c.x * kx, y: c.y * ky, w: c.w * kx, h: c.h * ky });
     }
     im.version++;
   }
@@ -1842,10 +1902,11 @@ async function renderAndEncode(im) {
     const p = computePatch(g, im.W, im.H, op, mk);
     if (p) g.putImageData(p.data, p.x, p.y);
   }
-  drawAnnos(g, im.annos);
+  const out = withAnnos(c, im);
   try {
-    return await encode(c, im.format);
+    return await encode(out.canvas, im.format);
   } finally {
+    if (out.temp) releaseCanvas(out.canvas);
     releaseCanvas(c);
   }
 }
@@ -1885,7 +1946,7 @@ async function openSave() {
   }
   const { blob, mime } = saveResult;
   $('extLabel').textContent = '.' + extFor(mime, state.format);
-  $('formatNote').innerHTML = formatNotes(state.format, mime, `${state.W} × ${state.H} px ・ ${formatBytes(blob.size)}`);
+  $('formatNote').innerHTML = formatNotes(state.format, mime, `${cropOf(curImage()).w} × ${cropOf(curImage()).h} px ・ ${formatBytes(blob.size)}${curImage().crop ? '（トリミング後）' : ''}`);
   $('shareBtn').disabled = false;
   $('downloadBtn').disabled = false;
   $('shareBtn').hidden = !canShareFiles([new File([blob], 'x.' + extFor(mime, state.format), { type: mime })]);
@@ -2129,11 +2190,12 @@ function setStrength(v, fromRange) {
 function updateUI() {
   for (const b of $('toolSeg').children) b.setAttribute('aria-checked', String(b.dataset.tool === state.tool));
   for (const b of $('effectSeg').children) b.setAttribute('aria-checked', String(b.dataset.effect === state.effect));
-  $('stage').dataset.tool = state.mode === 'write' ? 'write' : state.tool;
+  $('stage').dataset.tool = state.mode === 'hide' ? state.tool : state.mode;
   document.body.dataset.mode = state.mode;
   for (const b of $('modeSeg').children) b.setAttribute('aria-checked', String(b.dataset.mode === state.mode));
   $('hidePanel').hidden = state.mode !== 'hide';
   $('writePanel').hidden = state.mode !== 'write';
+  $('cropPanel').hidden = state.mode !== 'crop';
   for (const b of $('addRow').children) b.disabled = !state.work;
   const cfg = EFFECTS[state.effect];
   $('strengthRow').hidden = !cfg;
@@ -2262,6 +2324,7 @@ $('removeAllBtn').addEventListener('click', removeAll);
 $('copyList').addEventListener('change', updateCopyCount);
 $('copyOps').addEventListener('change', updateCopyCount);
 $('copyAnnos').addEventListener('change', updateCopyCount);
+$('copyCrop').addEventListener('change', updateCopyCount);
 $('copyAllBtn').addEventListener('click', () => {
   const boxes = [...$('copyList').querySelectorAll('input')];
   const all = boxes.every((b) => b.checked);
@@ -2304,19 +2367,272 @@ function loadPrefs() {
     if (p.strength) Object.assign(state.strength, p.strength);
     if (/^#[0-9a-f]{6}$/i.test(p.color || '')) state.color = p.color;
     if (['name', 'name-desc', 'added'].includes(p.sortOrder)) state.sortOrder = p.sortOrder;
+    if (['free', 'orig', '1:1', '4:3', '3:4', '16:9', '9:16', '4:5'].includes(p.cropAspect)) state.cropAspect = p.cropAspect;
   } catch { /* 無視 */ }
 }
 
 function savePrefs() {
   try {
     localStorage.setItem('mosaic-prefs', JSON.stringify({
-      tool: state.tool, effect: state.effect, strength: state.strength, color: state.color, sortOrder: state.sortOrder,
+      tool: state.tool, effect: state.effect, strength: state.strength, color: state.color, sortOrder: state.sortOrder, cropAspect: state.cropAspect,
     }));
   } catch { /* 無視 */ }
 }
 
+/* =========================================================
+ * トリミング
+ * 元の画像は切り落とさず、範囲（画像の座標）だけを記録する。保存するときに切り抜く。
+ * ======================================================= */
+
+const CROP_MIN = 8; // これより小さくはしない（px）
+const ASPECTS = { free: null, '1:1': 1, '4:3': 4 / 3, '3:4': 3 / 4, '16:9': 16 / 9, '9:16': 9 / 16, '4:5': 4 / 5 };
+
+/** トリミングの範囲（未設定なら画像全体） */
+function cropOf(im) {
+  return im?.crop || { x: 0, y: 0, w: im?.W || 0, h: im?.H || 0 };
+}
+
+function cropRatio() {
+  if (state.cropAspect === 'orig') return state.W / state.H;
+  return ASPECTS[state.cropAspect] ?? null;
+}
+
+/** 範囲を整数にそろえ、画像の中に収める。画像全体と同じなら「なし」にする */
+function setCrop(im, r) {
+  let w = Math.max(CROP_MIN, Math.min(im.W, Math.round(r.w)));
+  let h = Math.max(CROP_MIN, Math.min(im.H, Math.round(r.h)));
+  const x = Math.max(0, Math.min(im.W - w, Math.round(r.x)));
+  const y = Math.max(0, Math.min(im.H - h, Math.round(r.y)));
+  im.crop = x === 0 && y === 0 && w === im.W && h === im.H ? null : { x, y, w, h };
+}
+
+/** 範囲が変わるときだけ「元に戻す」の履歴を残して変更する */
+function changeCrop(im, r) {
+  const before = JSON.stringify(im.crop);
+  const snap = snapshot(im);
+  setCrop(im, r);
+  if (JSON.stringify(im.crop) === before) return false;
+  pushHistory(im, snap);
+  markChanged();
+  return true;
+}
+
+/** 角（と、比率が自由なときは辺の中央）のハンドル */
+function cropHandles(c) {
+  const hs = [];
+  for (const ex of [-1, 0, 1]) {
+    for (const ey of [-1, 0, 1]) {
+      if (!ex && !ey) continue;
+      if ((!ex || !ey) && cropRatio()) continue; // 比率を固定しているときは角だけ
+      hs.push({ ex, ey, x: c.x + ((ex + 1) / 2) * c.w, y: c.y + ((ey + 1) / 2) * c.h });
+    }
+  }
+  return hs;
+}
+
+function cropPointerDown(p) {
+  const im = curImage();
+  const s = state.view.s;
+  const c = cropOf(im);
+  const snap = snapshot(im);
+  const dc = Math.hypot(p[0] - (c.x + c.w / 2), p[1] - (c.y + c.h / 2));
+  let best = null, bd = Infinity;
+  for (const hd of cropHandles(c)) {
+    const d = Math.hypot(p[0] - hd.x, p[1] - hd.y);
+    if (d < bd) { bd = d; best = hd; }
+  }
+  // 枠が小さいときは、ハンドルより中心の方が近ければ移動を優先する
+  if (best && bd <= 24 / s && bd < dc) {
+    gesture = { type: 'c-resize', ex: best.ex, ey: best.ey, orig: { ...c }, start: p, snap, changed: false };
+  } else if (p[0] >= c.x && p[0] <= c.x + c.w && p[1] >= c.y && p[1] <= c.y + c.h) {
+    gesture = { type: 'c-move', orig: { ...c }, start: p, snap, changed: false };
+  } else {
+    const q = [Math.max(0, Math.min(state.W, p[0])), Math.max(0, Math.min(state.H, p[1]))];
+    gesture = { type: 'c-new', orig: { ...c }, start: q, snap, changed: false };
+  }
+}
+
+/** 固定した角 (ax, ay) から向き (sx, sy) へ、比率を保って画像に収まる範囲を作る */
+function ratioRect(ax, ay, sx, sy, w, h, ratio) {
+  let w2 = Math.max(w, h * ratio), h2 = w2 / ratio;
+  const maxW = sx > 0 ? state.W - ax : ax, maxH = sy > 0 ? state.H - ay : ay;
+  if (w2 > maxW) { w2 = maxW; h2 = w2 / ratio; }
+  if (h2 > maxH) { h2 = maxH; w2 = h2 * ratio; }
+  return { x: sx > 0 ? ax : ax - w2, y: sy > 0 ? ay : ay - h2, w: w2, h: h2 };
+}
+
+function cropPointerMove(p) {
+  const im = curImage();
+  const g0 = gesture.orig;
+  const dx = p[0] - gesture.start[0], dy = p[1] - gesture.start[1];
+  if (!gesture.changed && Math.hypot(dx, dy) * state.view.s < 3) return; // タップでは変えない
+  gesture.changed = true;
+  const ratio = cropRatio();
+  const W = state.W, H = state.H;
+  if (gesture.type === 'c-move') {
+    setCrop(im, { ...g0, x: g0.x + dx, y: g0.y + dy });
+  } else if (gesture.type === 'c-new') {
+    const [ax, ay] = gesture.start;
+    const qx = Math.max(0, Math.min(W, p[0])), qy = Math.max(0, Math.min(H, p[1]));
+    const sx = qx >= ax ? 1 : -1, sy = qy >= ay ? 1 : -1;
+    const r = ratio
+      ? ratioRect(ax, ay, sx, sy, Math.abs(qx - ax), Math.abs(qy - ay), ratio)
+      : { x: Math.min(ax, qx), y: Math.min(ay, qy), w: Math.abs(qx - ax), h: Math.abs(qy - ay) };
+    setCrop(im, r);
+  } else {
+    const { ex, ey } = gesture;
+    if (ratio) {
+      const ax = ex > 0 ? g0.x : g0.x + g0.w, ay = ey > 0 ? g0.y : g0.y + g0.h;
+      const qx = Math.max(0, Math.min(W, p[0])), qy = Math.max(0, Math.min(H, p[1]));
+      setCrop(im, ratioRect(ax, ay, ex, ey, Math.max(0, (qx - ax) * ex), Math.max(0, (qy - ay) * ey), ratio));
+    } else {
+      let l = g0.x, t = g0.y, r = g0.x + g0.w, b = g0.y + g0.h;
+      if (ex < 0) l = Math.max(0, Math.min(r - CROP_MIN, p[0]));
+      if (ex > 0) r = Math.min(W, Math.max(l + CROP_MIN, p[0]));
+      if (ey < 0) t = Math.max(0, Math.min(b - CROP_MIN, p[1]));
+      if (ey > 0) b = Math.min(H, Math.max(t + CROP_MIN, p[1]));
+      setCrop(im, { x: l, y: t, w: r - l, h: b - t });
+    }
+  }
+  syncCropPanel();
+}
+
+function drawCropOverlay(g, s) {
+  const im = curImage();
+  if (!im) return;
+  const c = cropOf(im);
+  g.save();
+  // 範囲の外を暗くする
+  g.beginPath();
+  g.rect(0, 0, state.W, state.H);
+  g.rect(c.x, c.y, c.w, c.h);
+  g.fillStyle = 'rgba(30, 34, 51, 0.58)';
+  g.fill('evenodd');
+  // 三分割の線
+  g.beginPath();
+  for (const k of [1, 2]) {
+    g.moveTo(c.x + (c.w * k) / 3, c.y);
+    g.lineTo(c.x + (c.w * k) / 3, c.y + c.h);
+    g.moveTo(c.x, c.y + (c.h * k) / 3);
+    g.lineTo(c.x + c.w, c.y + (c.h * k) / 3);
+  }
+  g.lineWidth = 1 / s;
+  g.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+  g.stroke();
+  // 枠
+  g.lineWidth = 2 / s;
+  g.strokeStyle = '#fff';
+  g.strokeRect(c.x, c.y, c.w, c.h);
+  // ハンドル（角はL字、辺は短い棒）
+  const L = 18 / s, T = 4 / s;
+  g.fillStyle = '#fff';
+  g.strokeStyle = MODE_COLORS.crop;
+  g.lineWidth = 1 / s;
+  for (const hd of cropHandles(c)) {
+    g.beginPath();
+    if (hd.ex && hd.ey) {
+      const x = hd.x - (hd.ex > 0 ? T : 0), y = hd.y - (hd.ey > 0 ? T : 0);
+      const hx = hd.ex > 0 ? hd.x - L : hd.x, vy = hd.ey > 0 ? hd.y - L : hd.y;
+      g.rect(hx, y, L, T);
+      g.rect(x, vy, T, L);
+    } else if (hd.ex) {
+      g.rect(hd.x - T / 2, hd.y - L / 2, T, L);
+    } else {
+      g.rect(hd.x - L / 2, hd.y - T / 2, L, T);
+    }
+    g.fill();
+    g.stroke();
+  }
+  g.restore();
+
+  // 枠の上に、トリミング後の大きさを表示する（画面座標）
+  const { tx, ty } = state.view;
+  g.save();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  const text = `${c.w} × ${c.h} px`;
+  g.font = `700 ${13 * dpr}px -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif`;
+  const tw = g.measureText(text).width;
+  const pw = tw + 20 * dpr, ph = 26 * dpr;
+  const cx = (tx + (c.x + c.w / 2) * s) * dpr;
+  let py = (ty + c.y * s) * dpr - ph - 8 * dpr;
+  if (py < 6 * dpr) py = (ty + c.y * s) * dpr + 8 * dpr; // 上に入らないときは枠の内側に
+  const px = Math.max(6 * dpr, Math.min(view.width - pw - 6 * dpr, cx - pw / 2));
+  g.fillStyle = MODE_COLORS.crop;
+  g.beginPath();
+  if (g.roundRect) g.roundRect(px, py, pw, ph, ph / 2);
+  else g.rect(px, py, pw, ph);
+  g.fill();
+  g.fillStyle = '#fff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, px + pw / 2, py + ph / 2 + dpr);
+  g.restore();
+}
+
+function syncCropPanel() {
+  const im = curImage();
+  const c = cropOf(im);
+  $('cropSize').textContent = im ? `${c.w} × ${c.h} px` : '—';
+  $('cropOrig').textContent = im ? `元の大きさ ${im.W} × ${im.H} px` : '';
+  for (const [id, v] of [['cropW', c.w], ['cropH', c.h]]) {
+    $(id).max = id === 'cropW' ? im?.W || 0 : im?.H || 0;
+    if (document.activeElement !== $(id)) $(id).value = im ? v : '';
+  }
+  for (const b of $('cropAspect').children) b.setAttribute('aria-checked', String(b.dataset.v === state.cropAspect));
+  $('cropResetBtn').disabled = !im?.crop;
+  requestDraw();
+}
+
+/** 比率を選んだら、今の範囲の中心を保ったまま、その比率で収まる一番大きな範囲にする */
+function setCropAspect(v) {
+  state.cropAspect = v;
+  savePrefs();
+  const im = curImage();
+  const ratio = cropRatio();
+  if (im && ratio) {
+    const c = cropOf(im);
+    let w = c.w, h = w / ratio;
+    if (h > c.h) { h = c.h; w = h * ratio; }
+    changeCrop(im, { x: c.x + (c.w - w) / 2, y: c.y + (c.h - h) / 2, w, h });
+  }
+  syncCropPanel();
+}
+
+/** 幅・高さを数値で指定する（中心を保つ。比率を固定しているときはもう一方も合わせる） */
+function setCropSize(which, value) {
+  const im = curImage();
+  if (!im || !Number.isFinite(value) || value < CROP_MIN) return;
+  const c = cropOf(im);
+  const ratio = cropRatio();
+  let w = c.w, h = c.h;
+  if (which === 'w') { w = Math.min(im.W, value); if (ratio) h = w / ratio; }
+  else { h = Math.min(im.H, value); if (ratio) w = h * ratio; }
+  if (ratio && w > im.W) { w = im.W; h = w / ratio; }
+  if (ratio && h > im.H) { h = im.H; w = h * ratio; }
+  changeCrop(im, { x: c.x + (c.w - w) / 2, y: c.y + (c.h - h) / 2, w, h });
+  syncCropPanel();
+}
+
+$('cropAspect').addEventListener('click', (e) => {
+  const v = e.target.closest('[data-v]')?.dataset.v;
+  if (v) setCropAspect(v);
+});
+for (const [id, which] of [['cropW', 'w'], ['cropH', 'h']]) {
+  $(id).addEventListener('change', (e) => setCropSize(which, Math.round(Number(e.target.value))));
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+}
+$('cropResetBtn').addEventListener('click', () => {
+  const im = curImage();
+  if (!im?.crop) return;
+  pushHistory();
+  im.crop = null;
+  markChanged();
+  syncCropPanel();
+});
+
 buildWriteControls();
 buildShapeControls();
+syncCropPanel();
 syncProps();
 updateUI();
 

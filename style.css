@@ -582,3 +582,24 @@ body.anno-selected #addRow button svg { width: 19px; height: 19px; }
 .edge-nav.prev span { border-left: 0; }
 .edge-nav.next span { border-right: 0; }
 .edge-nav:active span { background: var(--accent); color: #fff; }
+
+/* ---------- トリミング（琥珀色） ---------- */
+body[data-mode="crop"] {
+  --accent: #a16207;
+  --accent-soft: #fbe8c6;
+  --accent-ink: #7a4a05;
+  --tint: #fdf3e1;
+}
+.tabbar button[data-mode="crop"][aria-checked="true"] { background: #a16207; color: #fff; }
+.tabbar { gap: 6px; }
+.tabbar button { font-size: 13.5px; gap: 5px; }
+.dlg .btn.accent { background: var(--accent); }
+.pills.wrap { display: grid; grid-template-columns: repeat(4, 1fr); }
+.pills.wrap button { padding: 7px 0; font-size: 12.5px; }
+.pills.wrap button[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.crop-size { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.crop-size-label { font-size: 12.5px; font-weight: 700; color: var(--muted); }
+#cropSize { font-size: 22px; font-variant-numeric: tabular-nums; color: var(--accent-ink); }
+.crop-orig { font-size: 12px; color: var(--muted); }
+#cropW, #cropH { width: 84px; }
+.stage[data-tool="crop"] #view { cursor: crosshair; }

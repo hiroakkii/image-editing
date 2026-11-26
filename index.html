@@ -119,6 +119,35 @@
     </div>
     </div>
 
+    <div id="cropPanel" class="subpanel" hidden>
+      <div class="crop-size" aria-live="polite">
+        <span class="crop-size-label">トリミング後</span>
+        <b id="cropSize">—</b>
+        <span id="cropOrig" class="crop-orig"></span>
+      </div>
+      <div class="row">
+        <label for="cropW">大きさ</label>
+        <input type="number" id="cropW" inputmode="numeric" min="8" aria-label="幅">
+        <span class="unit">×</span>
+        <input type="number" id="cropH" inputmode="numeric" min="8" aria-label="高さ">
+        <span class="unit">px</span>
+      </div>
+      <div class="pills wrap" id="cropAspect" role="radiogroup" aria-label="比率">
+        <button type="button" data-v="free">自由</button>
+        <button type="button" data-v="orig">元の比率</button>
+        <button type="button" data-v="1:1">1:1</button>
+        <button type="button" data-v="4:3">4:3</button>
+        <button type="button" data-v="3:4">3:4</button>
+        <button type="button" data-v="16:9">16:9</button>
+        <button type="button" data-v="9:16">9:16</button>
+        <button type="button" data-v="4:5">4:5</button>
+      </div>
+      <div class="row actions">
+        <p class="hint" id="cropHint">枠の角・辺をドラッグで大きさを変更、内側で移動、外側をドラッグで新しく囲む</p>
+        <button id="cropResetBtn" class="btn" type="button" disabled>全体に戻す</button>
+      </div>
+    </div>
+
     <div id="writePanel" class="subpanel" hidden>
       <div class="tools five" id="addRow">
         <button type="button" data-add="text"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6V4h14v2M12 4v16M9 20h6"/></svg>文字</button>
@@ -193,6 +222,9 @@
     <button type="button" data-mode="write">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4l5 5L9 20H4v-5z"/><path d="M13 6l5 5"/></svg>書き込む
     </button>
+    <button type="button" data-mode="crop">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>トリミング
+    </button>
   </nav>
 
   <dialog id="saveDlg">
@@ -217,6 +249,7 @@
       <p id="copySummary" class="dlg-text"></p>
       <label class="check"><input type="checkbox" id="copyOps"> 隠す編集（モザイクなど）<span id="copyOpsN"></span></label>
       <label class="check"><input type="checkbox" id="copyAnnos"> 書き込み（文字・吹き出しなど）<span id="copyAnnosN"></span></label>
+      <label class="check"><input type="checkbox" id="copyCrop"> トリミング<span id="copyCropN"></span></label>
       <button type="button" id="copyAllBtn" class="link">すべて選択／解除</button>
       <div id="copyList" class="copy-list"></div>
       <p class="dlg-text small">同じサイズの画像は最初から選ばれています。適用した後、位置がずれた画像は開いて「元に戻す」で取り消せます。</p>
