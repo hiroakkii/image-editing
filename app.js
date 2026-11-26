@@ -2240,7 +2240,91 @@ document.querySelector('.swatches').addEventListener('click', (e) => {
   if (c) { state.color = c; savePrefs(); updateUI(); schedulePreview(); }
 });
 
-$('openBtn').addEventListener('click', () => $('fileInput').click());
+/* ---------- 開く（PCのChrome・Edgeでは、指定したフォルダから開く） ---------- */
+
+// ファイル選択画面を開く場所を指定できるブラウザか（iPhoneのSafariなどではできない）
+const canPickFolder = 'showOpenFilePicker' in window && 'showDirectoryPicker' in window && window.isSecureContext;
+const IMAGE_TYPES = [{ description: '画像', accept: { 'image/*': ['.png', '.jpg', '.jpeg', '.heic', '.heif', '.webp'] } }];
+let openDir = null; // 指定したフォルダ（FileSystemDirectoryHandle）
+
+// フォルダの指定はブラウザの IndexedDB に保存する（画像やフォルダの中身は保存しない）
+function kvStore(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('image-edit', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const tx = req.result.transaction('kv', mode);
+      const r = fn(tx.objectStore('kv'));
+      tx.oncomplete = () => resolve(r?.result);
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+}
+const kvGet = (k) => kvStore('readonly', (st) => st.get(k));
+const kvSet = (k, v) => kvStore('readwrite', (st) => st.put(v, k));
+const kvDel = (k) => kvStore('readwrite', (st) => st.delete(k));
+
+function syncOpenDir() {
+  $('openDirName').textContent = openDir ? openDir.name : '指定なし（前回開いた場所）';
+  $('openDirClearBtn').disabled = !openDir;
+  $('openDirBtn').title = openDir ? `最初に開くフォルダ：${openDir.name}` : '最初に開くフォルダ';
+  $('openDirBtn').classList.toggle('set', !!openDir);
+}
+
+async function openWithPicker() {
+  const opts = { multiple: true, types: IMAGE_TYPES, excludeAcceptAllOption: false };
+  // 指定したフォルダがあればそこから、なければ前回開いた場所（id ごとにブラウザが覚えている）から開く
+  if (openDir) opts.startIn = openDir;
+  else opts.id = 'image-edit-open';
+  let handles;
+  let fellBack = false;
+  try {
+    handles = await window.showOpenFilePicker(opts);
+  } catch (err) {
+    if (err.name === 'AbortError') return; // 選ばずに閉じた
+    if (openDir) {
+      // 指定したフォルダが移動・削除された場合など
+      fellBack = true;
+      try {
+        handles = await window.showOpenFilePicker({ multiple: true, types: IMAGE_TYPES, id: 'image-edit-open' });
+      } catch (e2) {
+        if (e2.name !== 'AbortError') $('fileInput').click();
+        return;
+      }
+    } else {
+      $('fileInput').click(); // うまく開けないときは通常の方法で開く
+      return;
+    }
+  }
+  const files = await Promise.all(handles.map((h) => h.getFile()));
+  await addFiles(files);
+  if (fellBack) toast(`指定したフォルダ「${openDir.name}」が見つからなかったため、前回開いた場所から開きました。フォルダを指定し直してください`, true, 6000);
+}
+
+$('openBtn').addEventListener('click', () => (canPickFolder ? openWithPicker() : $('fileInput').click()));
+$('openDirBtn').hidden = !canPickFolder;
+if (canPickFolder) {
+  kvGet('openDir').then((h) => { openDir = h || null; syncOpenDir(); }).catch(() => syncOpenDir());
+  $('openDirBtn').addEventListener('click', () => { syncOpenDir(); $('openDirDlg').showModal(); });
+  $('openDirPickBtn').addEventListener('click', async () => {
+    try {
+      const h = await window.showDirectoryPicker({ id: 'image-edit-dir', mode: 'read', startIn: openDir || 'pictures' });
+      openDir = h;
+      await kvSet('openDir', h);
+      syncOpenDir();
+      toast(`「${h.name}」から開くように設定しました`);
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('フォルダを指定できませんでした', true);
+    }
+  });
+  $('openDirClearBtn').addEventListener('click', async () => {
+    openDir = null;
+    try { await kvDel('openDir'); } catch { /* 無視 */ }
+    syncOpenDir();
+    toast('フォルダの指定を解除しました');
+  });
+}
 $('fileInput').addEventListener('change', (e) => {
   addFiles(e.target.files);
   e.target.value = '';
