@@ -39,6 +39,7 @@ const state = {
   mode: 'hide', // 'hide'（隠す） | 'write'（書き込む）
   annoSel: null, // 選択中の書き込みの id
   cropAspect: 'free', // トリミングの比率
+  saveTarget: 'sub', // フォルダに保存する先：'sub'（開くフォルダ\編集済み）| 'dir'（指定フォルダ）| 'download'（使わない）
   sortOrder: 'name', // 一覧の並び順：'name'（名前順）| 'name-desc'（名前の逆順）| 'added'（選んだ順）
   file: null,
   format: null, // { kind, ext, baseName, origName }
@@ -1953,6 +1954,9 @@ async function openSave() {
   $('shareBtn').disabled = false;
   $('downloadBtn').disabled = false;
   $('shareBtn').hidden = !canShareFiles([new File([blob], 'x.' + extFor(mime, state.format), { type: mime })]);
+  const label = saveFolderLabel();
+  $('folderSaveBtn').hidden = !label;
+  $('folderSaveBtn').textContent = `フォルダに保存（${label}）`;
 }
 
 function formatNotes(format, mime, extra) {
@@ -2019,6 +2023,10 @@ function openBatch() {
   const savedCount = state.images.filter((im) => isEdited(im) && !isUnsaved(im)).length;
   $('includeSavedRow').hidden = savedCount === 0;
   $('includeSaved').checked = false;
+  const label = saveFolderLabel();
+  $('batchFolderBtn').hidden = !label;
+  $('batchFolderBtn').disabled = false;
+  $('batchFolderBtn').textContent = `すべてフォルダに保存（${label}）`;
   $('batchDlg').showModal();
   startBatch();
 }
@@ -2271,9 +2279,126 @@ const kvDel = (k) => kvStore('readwrite', (st) => st.delete(k));
 function syncOpenDir() {
   $('openDirName').textContent = openDir ? openDir.name : '指定なし（前回開いた場所）';
   $('openDirClearBtn').disabled = !openDir;
-  $('openDirBtn').title = openDir ? `最初に開くフォルダ：${openDir.name}` : '最初に開くフォルダ';
+  const t = saveFolderLabel();
+  $('openDirBtn').title = `最初に開くフォルダ：${openDir ? openDir.name : '指定なし'}\n保存先：${t || 'ダウンロード'}`;
   $('openDirBtn').classList.toggle('set', !!openDir);
+  for (const r of document.querySelectorAll('input[name="saveTarget"]')) r.checked = r.value === state.saveTarget;
+  $('saveDirName').textContent = saveDir ? saveDir.name : '未指定';
+  $('saveTargetNote').textContent =
+    state.saveTarget === 'sub' && !openDir ? '「最初に開くフォルダ」を指定すると使えます。指定するまではダウンロードで保存します。'
+    : state.saveTarget === 'dir' && !saveDir ? '保存先のフォルダを指定すると使えます。指定するまではダウンロードで保存します。'
+    : '';
 }
+
+/* ---------- フォルダに保存（PCのChrome・Edgeのみ） ---------- */
+
+const EDITED_DIR = '編集済み';
+let saveDir = null; // 「別のフォルダ」に指定した保存先
+
+/** 保存先の表示名。フォルダに保存できないときは空 */
+function saveFolderLabel() {
+  if (!canPickFolder) return '';
+  if (state.saveTarget === 'sub' && openDir) return `${openDir.name}\\${EDITED_DIR}`;
+  if (state.saveTarget === 'dir' && saveDir) return saveDir.name;
+  return '';
+}
+
+/** 保存先のフォルダを用意する（書き込みの許可を確認し、「編集済み」フォルダがなければ作る）。ボタンを押した直後に呼ぶ */
+async function getSaveFolder() {
+  const base = state.saveTarget === 'sub' ? openDir : saveDir;
+  if (!base) throw new Error('保存先のフォルダが指定されていません');
+  const opt = { mode: 'readwrite' };
+  if ((await base.queryPermission(opt)) !== 'granted' && (await base.requestPermission(opt)) !== 'granted') {
+    throw new Error('フォルダへの書き込みが許可されなかったため、保存できませんでした');
+  }
+  return state.saveTarget === 'sub' ? base.getDirectoryHandle(EDITED_DIR, { create: true }) : base;
+}
+
+async function fileExists(dir, name) {
+  try {
+    await dir.getFileHandle(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function writeToFolder(dir, file) {
+  const fh = await dir.getFileHandle(file.name, { create: true });
+  const w = await fh.createWritable();
+  await w.write(file);
+  await w.close();
+}
+
+/** まとめて保存する前に、保存される名前を見込む（同じ名前が重なるときは「 (2)」などを付ける） */
+function plannedNames(list) {
+  const used = new Map();
+  return list.map((im) => {
+    const mime = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp', heic: 'image/jpeg' }[im.format.kind] || 'image/png';
+    const ext = extFor(mime, im.format);
+    let name = `${im.format.baseName}.${ext}`;
+    const n = (used.get(name.toLowerCase()) || 0) + 1;
+    used.set(name.toLowerCase(), n);
+    if (n > 1) name = `${im.format.baseName} (${n}).${ext}`;
+    return name;
+  });
+}
+
+$('folderSaveBtn').addEventListener('click', async () => {
+  if (!saveResult) return;
+  const file = outputFile();
+  try {
+    const dir = await getSaveFolder();
+    if ((await fileExists(dir, file.name)) && !confirm(`保存先に「${file.name}」がすでにあります。上書きしますか？`)) return;
+    await writeToFolder(dir, file);
+    markSaved(saveResult.im, saveResult.version);
+    $('saveDlg').close();
+    toast(`${saveFolderLabel()}\\${file.name} に保存しました`);
+  } catch (err) {
+    toast(err.message || '保存できませんでした', true);
+  }
+});
+
+let folderSaving = false;
+$('batchFolderBtn').addEventListener('click', async () => {
+  if (folderSaving) return;
+  const list = batchTargets();
+  if (!list.length) return;
+  folderSaving = true;
+  batch.token++; // 共有メニュー用の準備は止める
+  for (const id of ['batchFolderBtn', 'batchShareBtn', 'batchDownloadBtn', 'includeSaved']) $(id).disabled = true;
+  try {
+    const dir = await getSaveFolder();
+    const names = plannedNames(list);
+    const exists = [];
+    for (const n of names) if (await fileExists(dir, n)) exists.push(n);
+    if (exists.length && !confirm(`保存先に同じ名前のファイルが${exists.length}件あります（${exists.slice(0, 3).join('、')}${exists.length > 3 ? ' など' : ''}）。上書きしますか？`)) {
+      renderBatch();
+      return;
+    }
+    let done = 0;
+    for (let i = 0; i < list.length; i++) {
+      const im = list[i];
+      $('batchStatus').textContent = `保存中… ${i + 1} / ${list.length}枚目`;
+      const version = im.version;
+      const { blob, mime } = await renderAndEncode(im);
+      const name = names[i].replace(/\.[^.]+$/, '.' + extFor(mime, im.format));
+      await writeToFolder(dir, new File([blob], name, { type: mime, lastModified: Date.now() }));
+      markSaved(im, version);
+      done++;
+      $('batchProgress').style.width = `${(done / list.length) * 100}%`;
+    }
+    $('batchStatus').textContent = `${done}枚を ${saveFolderLabel()} に保存しました`;
+    toast(`${done}枚を保存しました`);
+  } catch (err) {
+    $('batchStatus').textContent = err.message || '保存できませんでした';
+    toast(err.message || '保存できませんでした', true);
+  } finally {
+    folderSaving = false;
+    $('batchFolderBtn').disabled = false;
+    $('includeSaved').disabled = false;
+  }
+});
 
 async function openWithPicker() {
   const opts = { multiple: true, types: IMAGE_TYPES, excludeAcceptAllOption: false };
@@ -2317,6 +2442,28 @@ if (canPickFolder) {
       await kvSet('openDir', h);
       syncOpenDir();
       toast(`「${h.name}」から開くように設定しました`);
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('フォルダを指定できませんでした', true);
+    }
+  });
+  kvGet('saveDir').then((h) => { saveDir = h || null; syncOpenDir(); }).catch(() => {});
+  for (const r of document.querySelectorAll('input[name="saveTarget"]')) {
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      state.saveTarget = r.value;
+      savePrefs();
+      syncOpenDir();
+    });
+  }
+  $('saveDirPickBtn').addEventListener('click', async () => {
+    try {
+      const h = await window.showDirectoryPicker({ id: 'image-edit-save', mode: 'readwrite', startIn: saveDir || openDir || 'pictures' });
+      saveDir = h;
+      await kvSet('saveDir', h);
+      state.saveTarget = 'dir';
+      savePrefs();
+      syncOpenDir();
+      toast(`「${h.name}」に保存するように設定しました`);
     } catch (err) {
       if (err.name !== 'AbortError') toast('フォルダを指定できませんでした', true);
     }
@@ -2455,13 +2602,14 @@ function loadPrefs() {
     if (/^#[0-9a-f]{6}$/i.test(p.color || '')) state.color = p.color;
     if (['name', 'name-desc', 'added'].includes(p.sortOrder)) state.sortOrder = p.sortOrder;
     if (['free', 'orig', '1:1', '4:3', '3:4', '16:9', '9:16', '4:5'].includes(p.cropAspect)) state.cropAspect = p.cropAspect;
+    if (['sub', 'dir', 'download'].includes(p.saveTarget)) state.saveTarget = p.saveTarget;
   } catch { /* 無視 */ }
 }
 
 function savePrefs() {
   try {
     localStorage.setItem('mosaic-prefs', JSON.stringify({
-      tool: state.tool, effect: state.effect, strength: state.strength, color: state.color, sortOrder: state.sortOrder, cropAspect: state.cropAspect,
+      tool: state.tool, effect: state.effect, strength: state.strength, color: state.color, sortOrder: state.sortOrder, cropAspect: state.cropAspect, saveTarget: state.saveTarget,
     }));
   } catch { /* 無視 */ }
 }

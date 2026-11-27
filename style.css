@@ -638,3 +638,8 @@ body[data-mode="crop"] {
   .row label { min-width: 5.8em; }
   .props .row > label { min-width: 3.2em; }
 }
+.save-target { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+.save-target .check { margin-bottom: 4px; }
+.save-target #saveDirPickBtn { align-self: flex-start; margin: 0 0 8px 28px; }
+#saveTargetNote:empty { display: none; }
+#saveTargetNote { color: var(--warn-ink); font-weight: 700; }

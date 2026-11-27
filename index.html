@@ -240,6 +240,7 @@
       </div>
       <button type="button" id="resetNameBtn" class="link">元の名前に戻す</button>
       <ul id="formatNote" class="note"></ul>
+      <button type="button" id="folderSaveBtn" class="btn accent wide" hidden>フォルダに保存</button>
       <button type="button" id="shareBtn" class="btn accent wide">写真・ファイルに保存（共有メニュー）</button>
       <button type="button" id="downloadBtn" class="btn wide">ダウンロード</button>
       <button value="cancel" class="btn ghost wide">閉じる</button>
@@ -272,6 +273,7 @@
         <li>元のファイル名・形式で保存します（PNGは劣化なし、JPEG・HEICは品質95%）</li>
         <li>メタデータは削除されます</li>
       </ul>
+      <button type="button" id="batchFolderBtn" class="btn accent wide" hidden>すべてフォルダに保存</button>
       <button type="button" id="batchShareBtn" class="btn accent wide" disabled>準備中…</button>
       <button type="button" id="batchDownloadBtn" class="btn wide" disabled>ダウンロード</button>
       <button value="cancel" class="btn ghost wide">閉じる</button>
@@ -303,12 +305,22 @@
 
   <dialog id="openDirDlg">
     <form method="dialog" class="dlg">
-      <h2>最初に開くフォルダ</h2>
+      <h2>フォルダの設定</h2>
+      <h3 class="dlg-h3">最初に開くフォルダ</h3>
       <p class="dlg-text">「開く」を押したときに、最初に表示するフォルダを指定できます。</p>
       <p class="dlg-text"><span class="dlg-label">いま指定しているフォルダ</span><br><b id="openDirName">指定なし（前回開いた場所）</b></p>
       <button type="button" id="openDirPickBtn" class="btn accent wide">フォルダを指定する</button>
       <button type="button" id="openDirClearBtn" class="btn wide">指定を解除する（前回開いた場所から開く）</button>
-      <p class="dlg-text small">フォルダを選ぶとき、ブラウザに「このサイトにファイルの閲覧を許可しますか」と表示されることがあります。指定はこのブラウザに保存され、画像やフォルダの中身がどこかに送られることはありません。</p>
+
+      <h3 class="dlg-h3">保存先（保存画面の「フォルダに保存」）</h3>
+      <div class="save-target" role="radiogroup" aria-label="保存先">
+        <label class="check"><input type="radio" name="saveTarget" value="sub"> 開くフォルダの中の「編集済み」フォルダ</label>
+        <label class="check"><input type="radio" name="saveTarget" value="dir"> 別のフォルダ：<b id="saveDirName">未指定</b></label>
+        <button type="button" id="saveDirPickBtn" class="btn small">保存先のフォルダを指定する</button>
+        <label class="check"><input type="radio" name="saveTarget" value="download"> 使わない（これまでどおりダウンロード）</label>
+      </div>
+      <p id="saveTargetNote" class="dlg-text small"></p>
+      <p class="dlg-text small">フォルダを選ぶときや初めて保存するとき、ブラウザに「ファイルの閲覧（編集）を許可しますか」と表示されることがあります。指定はこのブラウザに保存され、画像やフォルダの中身がどこかに送られることはありません。「編集済み」フォルダは、最初に保存するときに自動で作られ、以降はその中に保存されます。</p>
       <button value="cancel" class="btn ghost wide">閉じる</button>
     </form>
   </dialog>
